@@ -194,14 +194,17 @@ class NotaCreate(BaseModel):
 class ArusKasInput(BaseModel):
     periode: str  # "YYYY-MM"
     sumber_dana: str
-    modal_awal: float = 0
+    saldo_awal: float = 0
     penjualan: float = 0
     penambahan_modal: float = 0
+    pendapatan_lainnya: float = 0
     kas_bulan_lalu_belum_disetor: float = 0
     sponsor_sisa: float = 0
     penambahan_lain: float = 0
-    setoran_kas_bulan_lalu: float = 0
-    setoran_kas_bulan_ini: float = 0
+    setoran_ke_kasir: float = 0
+    setoran_ke_bank: float = 0
+    setoran_ke_koperasi: float = 0
+    belanja_dana_pengembangan: float = 0
 
 # ---------------------------------------------------------------------------
 # Auth endpoints
@@ -594,23 +597,31 @@ async def report_arus_kas(user: dict = Depends(get_current_user),
                         for k, v in sorted(belanja_acc.items(), key=lambda kv: _kode_sort_key(kv[0]))]
         total_belanja = sum(r["nilai"] for r in belanja_rows)
         inp = imap.get(code, {})
+        saldo_awal = inp.get("saldo_awal", 0)
         penambahan = {
-            "modal_awal": inp.get("modal_awal", 0), "penjualan": inp.get("penjualan", 0),
+            "penjualan": inp.get("penjualan", 0),
             "penambahan_modal": inp.get("penambahan_modal", 0),
+            "pendapatan_lainnya": inp.get("pendapatan_lainnya", 0),
             "kas_bulan_lalu_belum_disetor": inp.get("kas_bulan_lalu_belum_disetor", 0),
-            "sponsor_sisa": inp.get("sponsor_sisa", 0), "penambahan_lain": inp.get("penambahan_lain", 0),
+            "sponsor_sisa": inp.get("sponsor_sisa", 0),
+            "penambahan_lain": inp.get("penambahan_lain", 0),
         }
         jumlah_penambahan = sum(penambahan.values())
-        setoran_lalu = inp.get("setoran_kas_bulan_lalu", 0)
-        setoran_ini = inp.get("setoran_kas_bulan_ini", 0)
-        jumlah_pengeluaran = total_belanja + setoran_lalu + setoran_ini
-        kas_belum_disetor = round(jumlah_penambahan - jumlah_pengeluaran, 2)
+        pengeluaran_lain = {
+            "setoran_ke_kasir": inp.get("setoran_ke_kasir", 0),
+            "setoran_ke_bank": inp.get("setoran_ke_bank", 0),
+            "setoran_ke_koperasi": inp.get("setoran_ke_koperasi", 0),
+            "belanja_dana_pengembangan": inp.get("belanja_dana_pengembangan", 0),
+        }
+        jumlah_pengeluaran = total_belanja + sum(pengeluaran_lain.values())
+        saldo_akhir = round(saldo_awal + jumlah_penambahan - jumlah_pengeluaran, 2)
         result.append({
             "sumber_dana": code, "sumber_dana_nama": sd_names.get(code, code),
+            "saldo_awal": saldo_awal,
             "penambahan": penambahan, "jumlah_penambahan": round(jumlah_penambahan, 2),
             "belanja": belanja_rows, "total_belanja": round(total_belanja, 2),
-            "setoran_kas_bulan_lalu": setoran_lalu, "setoran_kas_bulan_ini": setoran_ini,
-            "jumlah_pengeluaran": round(jumlah_pengeluaran, 2), "kas_belum_disetor": kas_belum_disetor,
+            "pengeluaran_lain": pengeluaran_lain,
+            "jumlah_pengeluaran": round(jumlah_pengeluaran, 2), "saldo_akhir": saldo_akhir,
         })
     return {"periode": periode, "groups": result}
 
@@ -629,6 +640,30 @@ async def save_arus_kas_input(payload: ArusKasInput, user: dict = Depends(get_cu
         {"periode": doc["periode"], "sumber_dana": doc["sumber_dana"]},
         {"$set": doc}, upsert=True)
     return {"message": "Data arus kas disimpan"}
+
+
+@api_router.get("/reports/rekap-bulanan")
+async def rekap_bulanan(user: dict = Depends(get_current_user), year: Optional[str] = Query(None)):
+    yr = year or datetime.now(timezone.utc).strftime("%Y")
+    docs = await db.notas.find({"tanggal_nota": {"$regex": f"^{yr}"}}).to_list(20000)
+    months = {f"{m:02d}": {"pendapatan": 0.0, "belanja": 0.0} for m in range(1, 13)}
+    for d in docs:
+        mm = (d.get("tanggal_nota", "") or "")[5:7]
+        if mm not in months:
+            continue
+        for it in d.get("items", []):
+            if it.get("jenis") == "pendapatan":
+                months[mm]["pendapatan"] += it.get("total", 0)
+            elif it.get("jenis") == "belanja":
+                months[mm]["belanja"] += it.get("total", 0)
+    labels = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+    data = [{"bulan": labels[i],
+             "pendapatan": round(months[f"{i+1:02d}"]["pendapatan"], 2),
+             "belanja": round(months[f"{i+1:02d}"]["belanja"], 2)} for i in range(12)]
+    tp = sum(x["pendapatan"] for x in data)
+    tb = sum(x["belanja"] for x in data)
+    return {"year": yr, "data": data, "total_pendapatan": round(tp, 2),
+            "total_belanja": round(tb, 2), "saldo": round(tp - tb, 2)}
 
 # ---------------------------------------------------------------------------
 # Startup

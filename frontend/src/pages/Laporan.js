@@ -84,12 +84,17 @@ export default function Laporan() {
       ]);
       setArusKas(r.data.groups[0] || null);
       setAkInput({
-        modal_awal: inp.data.modal_awal || 0, penjualan: inp.data.penjualan || 0,
+        saldo_awal: inp.data.saldo_awal || 0,
+        penjualan: inp.data.penjualan || 0,
         penambahan_modal: inp.data.penambahan_modal || 0,
+        pendapatan_lainnya: inp.data.pendapatan_lainnya || 0,
         kas_bulan_lalu_belum_disetor: inp.data.kas_bulan_lalu_belum_disetor || 0,
-        sponsor_sisa: inp.data.sponsor_sisa || 0, penambahan_lain: inp.data.penambahan_lain || 0,
-        setoran_kas_bulan_lalu: inp.data.setoran_kas_bulan_lalu || 0,
-        setoran_kas_bulan_ini: inp.data.setoran_kas_bulan_ini || 0,
+        sponsor_sisa: inp.data.sponsor_sisa || 0,
+        penambahan_lain: inp.data.penambahan_lain || 0,
+        setoran_ke_kasir: inp.data.setoran_ke_kasir || 0,
+        setoran_ke_bank: inp.data.setoran_ke_bank || 0,
+        setoran_ke_koperasi: inp.data.setoran_ke_koperasi || 0,
+        belanja_dana_pengembangan: inp.data.belanja_dana_pengembangan || 0,
       });
     } finally {
       setAkLoading(false);
@@ -410,10 +415,14 @@ export default function Laporan() {
               <Card className="p-5 space-y-3">
                 <h3 className="font-heading font-semibold text-sm">Input Penambahan & Setoran (Manual)</h3>
                 {[
-                  ["modal_awal", "Modal Awal"], ["penjualan", "Penjualan"], ["penambahan_modal", "Penambahan Modal"],
-                  ["kas_bulan_lalu_belum_disetor", "Kas Bulan Lalu Belum Disetor"], ["sponsor_sisa", "Sponsor / Sisa Kembalian"],
-                  ["penambahan_lain", "Penambahan Lain"], ["setoran_kas_bulan_lalu", "Setoran Kas Bulan Lalu"],
-                  ["setoran_kas_bulan_ini", "Setoran Kas Bulan Ini"],
+                  ["saldo_awal", "Saldo Awal"],
+                  ["penjualan", "Penjualan"], ["penambahan_modal", "Penambahan Modal (dari Bank/Koperasi)"],
+                  ["pendapatan_lainnya", "Pendapatan Lainnya"],
+                  ["kas_bulan_lalu_belum_disetor", "Kas Bulan Lalu Belum Disetor"],
+                  ["sponsor_sisa", "Sponsor / Sisa Kembalian"], ["penambahan_lain", "Penambahan Lain"],
+                  ["setoran_ke_kasir", "Setoran ke Kasir"], ["setoran_ke_bank", "Setoran ke Bank"],
+                  ["setoran_ke_koperasi", "Setoran ke Koperasi"],
+                  ["belanja_dana_pengembangan", "Belanja dari Dana Pengembangan"],
                 ].map(([key, label]) => (
                   <div key={key} className="flex items-center justify-between gap-3">
                     <Label className="text-xs flex-1">{label}</Label>
@@ -426,12 +435,14 @@ export default function Laporan() {
 
               {/* Report */}
               <Card className="p-5 space-y-3" data-testid="aruskas-report">
-                <h3 className="font-heading font-semibold text-sm">Arus Kas — {sdName(akSumber)} ({periode})</h3>
+                <h3 className="font-heading font-semibold text-sm">Rincian Arus Kas — {sdName(akSumber)} ({periode})</h3>
+                <div className="flex justify-between text-sm font-semibold"><span>Saldo Awal</span><span className="font-mono tabular-nums">{formatRupiah(arusKas?.saldo_awal)}</span></div>
                 <div>
                   <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 uppercase mb-1">Penambahan</p>
                   {arusKas && Object.entries({
-                    "Modal Awal": arusKas.penambahan.modal_awal, "Penjualan": arusKas.penambahan.penjualan,
+                    "Penjualan": arusKas.penambahan.penjualan,
                     "Penambahan Modal": arusKas.penambahan.penambahan_modal,
+                    "Pendapatan Lainnya": arusKas.penambahan.pendapatan_lainnya,
                     "Kas Bln Lalu Blm Disetor": arusKas.penambahan.kas_bulan_lalu_belum_disetor,
                     "Sponsor / Sisa": arusKas.penambahan.sponsor_sisa, "Penambahan Lain": arusKas.penambahan.penambahan_lain,
                   }).map(([k, v]) => (
@@ -440,16 +451,22 @@ export default function Laporan() {
                   <div className="flex justify-between text-sm font-semibold border-t border-border pt-1 mt-1"><span>Jumlah Penambahan</span><span className="font-mono tabular-nums text-emerald-600 dark:text-emerald-400">{formatRupiah(arusKas?.jumlah_penambahan)}</span></div>
                 </div>
                 <div>
-                  <p className="text-xs font-semibold text-rose-700 dark:text-rose-400 uppercase mb-1">Pengeluaran (Belanja)</p>
+                  <p className="text-xs font-semibold text-rose-700 dark:text-rose-400 uppercase mb-1">Pengeluaran</p>
                   {(arusKas?.belanja || []).map((b) => (
                     <div key={b.kode} className="flex justify-between text-sm py-0.5"><span className="text-muted-foreground"><span className="font-mono">{b.kode}</span> {b.nama}</span><span className="font-mono tabular-nums">{formatRupiah(b.nilai)}</span></div>
                   ))}
-                  <div className="flex justify-between text-sm py-0.5"><span className="text-muted-foreground">Setoran Kas Bulan Lalu</span><span className="font-mono tabular-nums">{formatRupiah(arusKas?.setoran_kas_bulan_lalu)}</span></div>
-                  <div className="flex justify-between text-sm py-0.5"><span className="text-muted-foreground">Setoran Kas Bulan Ini</span><span className="font-mono tabular-nums">{formatRupiah(arusKas?.setoran_kas_bulan_ini)}</span></div>
+                  {arusKas && Object.entries({
+                    "Setoran ke Kasir": arusKas.pengeluaran_lain.setoran_ke_kasir,
+                    "Setoran ke Bank": arusKas.pengeluaran_lain.setoran_ke_bank,
+                    "Setoran ke Koperasi": arusKas.pengeluaran_lain.setoran_ke_koperasi,
+                    "Belanja Dana Pengembangan": arusKas.pengeluaran_lain.belanja_dana_pengembangan,
+                  }).map(([k, v]) => (
+                    <div key={k} className="flex justify-between text-sm py-0.5"><span className="text-muted-foreground">{k}</span><span className="font-mono tabular-nums">{formatRupiah(v)}</span></div>
+                  ))}
                   <div className="flex justify-between text-sm font-semibold border-t border-border pt-1 mt-1"><span>Jumlah Pengeluaran</span><span className="font-mono tabular-nums text-rose-600 dark:text-rose-400">{formatRupiah(arusKas?.jumlah_pengeluaran)}</span></div>
                 </div>
                 <div className="flex justify-between font-bold bg-primary text-primary-foreground rounded-lg px-4 py-3">
-                  <span>Kas Belum Disetor</span><span className="font-mono tabular-nums" data-testid="ak-kas-belum-disetor">{formatRupiah(arusKas?.kas_belum_disetor)}</span>
+                  <span>Saldo Akhir</span><span className="font-mono tabular-nums" data-testid="ak-saldo-akhir">{formatRupiah(arusKas?.saldo_akhir)}</span>
                 </div>
               </Card>
             </div>

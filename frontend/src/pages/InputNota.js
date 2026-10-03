@@ -13,7 +13,7 @@ import {
 import { Plus, Trash2, Save, Loader2, Receipt } from "lucide-react";
 import { toast } from "sonner";
 
-const emptyItem = () => ({ item_barang_id: "", nama: "", kode_rekening: "", kode_rekening_nama: "", kategori: "", unit: 1, harga_per_unit: 0 });
+const emptyItem = () => ({ item_barang_id: "", nama: "", kode_rekening: "", kode_rekening_nama: "", kategori: "", unit: 1, total: 0 });
 
 const jenisFromKode = (kode) => (String(kode || "").trim().startsWith("1") ? "pendapatan" : "belanja");
 
@@ -58,7 +58,7 @@ export default function InputNota() {
         setItems(data.items.map((it) => ({
           item_barang_id: it.item_barang_id || "", nama: it.nama,
           kode_rekening: it.kode_rekening || "", kode_rekening_nama: it.kode_rekening_nama || "",
-          kategori: it.kategori || "", unit: it.unit, harga_per_unit: it.harga_per_unit,
+          kategori: it.kategori || "", unit: it.unit, total: it.total,
         })));
       } catch {
         toast.error("Nota tidak ditemukan");
@@ -67,7 +67,7 @@ export default function InputNota() {
   }, [id]);
 
   const totalNota = useMemo(
-    () => items.reduce((s, it) => s + (Number(it.unit) || 0) * (Number(it.harga_per_unit) || 0), 0),
+    () => items.reduce((s, it) => s + (Number(it.total) || 0), 0),
     [items]
   );
 
@@ -111,8 +111,8 @@ export default function InputNota() {
           kategori: it.kategori || "",
           jenis: jenisFromKode(it.kode_rekening),
           unit: Number(it.unit) || 0,
-          harga_per_unit: Number(it.harga_per_unit) || 0,
-          total: (Number(it.unit) || 0) * (Number(it.harga_per_unit) || 0),
+          harga_per_unit: (Number(it.unit) || 0) > 0 ? (Number(it.total) || 0) / (Number(it.unit) || 0) : 0,
+          total: Number(it.total) || 0,
         })),
         total_nota: totalNota,
       };
@@ -172,7 +172,8 @@ export default function InputNota() {
           </div>
 
           {items.map((it, idx) => {
-            const rowTotal = (Number(it.unit) || 0) * (Number(it.harga_per_unit) || 0);
+            const rowTotal = Number(it.total) || 0;
+            const hargaUnit = (Number(it.unit) || 0) > 0 ? rowTotal / (Number(it.unit) || 0) : 0;
             const jenis = jenisFromKode(it.kode_rekening);
             return (
               <Card key={idx} className="p-4 bg-muted/20 border-dashed" data-testid={`item-row-${idx}`}>
@@ -223,11 +224,12 @@ export default function InputNota() {
                     <Input type="number" min="0" data-testid={`input-unit-${idx}`} value={it.unit} onChange={(e) => updateItem(idx, { unit: e.target.value })} className="h-9 text-right font-mono" />
                   </div>
                   <div className="lg:col-span-2 space-y-1.5">
-                    <Label className="text-xs">Harga / Unit</Label>
-                    <Input type="number" min="0" data-testid={`input-harga-${idx}`} value={it.harga_per_unit} onChange={(e) => updateItem(idx, { harga_per_unit: e.target.value })} className="h-9 text-right font-mono" />
+                    <Label className="text-xs">Total Harga</Label>
+                    <Input type="number" min="0" data-testid={`input-total-${idx}`} value={it.total} onChange={(e) => updateItem(idx, { total: e.target.value })} className="h-9 text-right font-mono" />
                   </div>
                 </div>
-                <div className="flex justify-end mt-2">
+                <div className="flex justify-between items-center mt-2">
+                  <span className="text-xs text-muted-foreground">Harga / unit: <span className="font-mono tabular-nums">{formatRupiah(hargaUnit)}</span></span>
                   <span className="text-sm">Total item: <span className="font-mono font-semibold tabular-nums" data-testid={`item-total-${idx}`}>{formatRupiah(rowTotal)}</span></span>
                 </div>
               </Card>

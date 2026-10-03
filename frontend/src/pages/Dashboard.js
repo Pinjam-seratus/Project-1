@@ -9,7 +9,7 @@ import {
   TrendingUp, TrendingDown, Wallet, Receipt, FilePlus2, Loader2, ArrowRight,
 } from "lucide-react";
 import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell,
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell, LineChart, Line,
 } from "recharts";
 
 const StatCard = ({ title, value, icon: Icon, accent, testid }) => (
@@ -32,19 +32,22 @@ export default function Dashboard() {
   const [summary, setSummary] = useState(null);
   const [notas, setNotas] = useState([]);
   const [sumberDana, setSumberDana] = useState([]);
+  const [rekap, setRekap] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const [s, n, sd] = await Promise.all([
+        const [s, n, sd, rk] = await Promise.all([
           api.get("/reports/summary"),
           api.get("/nota"),
           api.get("/master/sumber-dana"),
+          api.get("/reports/rekap-bulanan"),
         ]);
         setSummary(s.data);
         setNotas(n.data);
         setSumberDana(sd.data);
+        setRekap(rk.data);
       } finally {
         setLoading(false);
       }
@@ -136,6 +139,26 @@ export default function Dashboard() {
           )}
         </Card>
       </div>
+
+      <Card className="p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-heading font-semibold text-base">Tren Bulanan {rekap?.year}</h3>
+          <div className="flex items-center gap-4 text-xs">
+            <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Pendapatan</span>
+            <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-rose-500" /> Belanja</span>
+          </div>
+        </div>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={rekap?.data || []}>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+            <XAxis dataKey="bulan" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+            <YAxis tickFormatter={(v) => (v >= 1000000 ? `${(v / 1000000).toFixed(0)}jt` : v >= 1000 ? `${(v / 1000).toFixed(0)}rb` : v)} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+            <Tooltip formatter={(v) => formatRupiah(v)} contentStyle={{ borderRadius: 8, fontSize: 13 }} />
+            <Line type="monotone" dataKey="pendapatan" stroke="#10B981" strokeWidth={2.5} dot={{ r: 3 }} />
+            <Line type="monotone" dataKey="belanja" stroke="#F43F5E" strokeWidth={2.5} dot={{ r: 3 }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </Card>
     </div>
   );
 }
