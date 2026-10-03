@@ -467,54 +467,163 @@ async def delete_nota(nota_id: str, user: dict = Depends(get_current_user)):
 @api_router.get("/reports/summary")
 async def report_summary(user: dict = Depends(get_current_user),
                          start: Optional[str] = Query(None), end: Optional[str] = Query(None)):
-    q = _nota_filter(start, end, None, None, None, None)
+    q = _nota_filter(start, end, None)
     docs = await db.notas.find(q).to_list(10000)
-    pendapatan = sum(d["total_nota"] for d in docs if d.get("jenis") == "pendapatan")
-    pengeluaran = sum(d["total_nota"] for d in docs if d.get("jenis") == "pengeluaran")
+    pendapatan = pengeluaran = 0.0
+    for d in docs:
+        for it in d.get("items", []):
+            if it.get("jenis") == "pendapatan":
+                pendapatan += it.get("total", 0)
+            elif it.get("jenis") == "belanja":
+                pengeluaran += it.get("total", 0)
     return {"total_pendapatan": round(pendapatan, 2), "total_pengeluaran": round(pengeluaran, 2),
             "saldo": round(pendapatan - pengeluaran, 2), "jumlah_nota": len(docs)}
+
+
+def _item_passes(it, kategori, kode_rekening):
+    if kategori and kategori != "all" and it.get("kategori") != kategori:
+        return False
+    if kode_rekening and kode_rekening != "all" and it.get("kode_rekening") != kode_rekening:
+        return False
+    return True
+
+
+def _kode_sort_key(k):
+    try:
+        return (0,) + tuple(int(p) for p in str(k).split("."))
+    except Exception:
+        return (999, str(k))
 
 
 @api_router.get("/reports/pendapatan-pengeluaran")
 async def report_pp(user: dict = Depends(get_current_user),
                     start: Optional[str] = Query(None), end: Optional[str] = Query(None),
-                    sumber_dana: Optional[str] = Query(None), kegiatan: Optional[str] = Query(None)):
-    q = _nota_filter(start, end, None, sumber_dana, kegiatan, None)
-    docs = await db.notas.find(q).sort("tanggal_nota", 1).to_list(10000)
-    pendapatan = [_serialize(d) for d in docs if d.get("jenis") == "pendapatan"]
-    pengeluaran = [_serialize(d) for d in docs if d.get("jenis") == "pengeluaran"]
-    total_p = sum(d["total_nota"] for d in pendapatan)
-    total_e = sum(d["total_nota"] for d in pengeluaran)
-    return {"pendapatan": pendapatan, "pengeluaran": pengeluaran,
-            "total_pendapatan": round(total_p, 2), "total_pengeluaran": round(total_e, 2),
-            "saldo": round(total_p - total_e, 2)}
-
-
-@api_router.get("/reports/item-per-sumber-dana")
-async def report_item_sumber(user: dict = Depends(get_current_user),
-                             start: Optional[str] = Query(None), end: Optional[str] = Query(None)):
-    q = _nota_filter(start, end, None, None, None, None)
+                    sumber_dana: Optional[str] = Query(None), kategori: Optional[str] = Query(None)):
+    q = _nota_filter(start, end, sumber_dana)
     docs = await db.notas.find(q).to_list(10000)
+    acc = {}
+    for d in docs:
+        for it in d.get("items", []):
+            if not _item_passes(it, kategori, None):
+                continue
+            kode = it.get("kode_rekening", "") or "-"
+            acc[kode] = acc.get(kode, 0.0) + it.get("total", 0)
+    master = await db.kode_rekening.find({}).to_list(5000)
+    mmap = {m["kode"]: m for m in master}
+    all_kode = set(mmap.keys()) | set(acc.keys())
+    rows = []
+    for kode in sorted(all_kode, key=_kode_sort_key):
+        m = mmap.get(kode, {})
+        jenis = m.get("jenis") or jenis_from_kode(kode)
+        rows.append({"kode": kode, "nama": m.get("nama", kode), "jenis": jenis,
+                     "nilai": round(acc.get(kode, 0.0), 2)})
+    pendapatan = [r for r in rows if r["jenis"] == "pendapatan"]
+    belanja = [r for r in rows if r["jenis"] == "belanja"]
+    dialokasikan = [r for r in rows if r["jenis"] == "dialokasikan"]
+    tp = sum(r["nilai"] for r in pendapatan)
+    tb = sum(r["nilai"] for r in belanja)
+    td = sum(r["nilai"] for r in dialokasikan)
+    return {"pendapatan": pendapatan, "belanja": belanja, "dialokasikan": dialokasikan,
+            "total_pendapatan": round(tp, 2), "total_belanja": round(tb, 2),
+            "total_dialokasikan": round(td, 2), "total_transaksi": round(tp - tb, 2)}
+
+
+@api_router.get("/reports/rincian-belanja")
+async def report_rincian(user: dict = Depends(get_current_user),
+                         start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+                         sumber_dana: Optional[str] = Query(None), kategori: Optional[str] = Query(None),
+                         kode_rekening: Optional[str] = Query(None)):
+    q = _nota_filter(start, end, sumber_dana)
+    docs = await db.notas.find(q).sort("tanggal_nota", 1).to_list(10000)
     groups = {}
     for d in docs:
         sd = d.get("sumber_dana", "lainnya")
-        g = groups.setdefault(sd, {"sumber_dana": sd, "items": [], "total": 0})
+        first = True
         for it in d.get("items", []):
+            if not _item_passes(it, kategori, kode_rekening):
+                continue
+            g = groups.setdefault(sd, {"sumber_dana": sd, "items": [], "total": 0})
             g["items"].append({
-                "nomor_nota": d.get("nomor_nota"),
-                "tanggal_nota": d.get("tanggal_nota"),
-                "jenis": d.get("jenis"),
-                "kegiatan": d.get("kegiatan"),
-                "nama": it.get("nama"),
-                "unit": it.get("unit"),
-                "harga_per_unit": it.get("harga_per_unit"),
-                "total": it.get("total"),
+                "tanggal_nota": d.get("tanggal_nota"), "tanggal_bayar": d.get("tanggal_bayar"),
+                "nomor_nota": d.get("nomor_nota"), "kode_rekening": it.get("kode_rekening"),
+                "kode_rekening_nama": it.get("kode_rekening_nama"), "kategori": it.get("kategori"),
+                "nama": it.get("nama"), "unit": it.get("unit"),
+                "harga_per_unit": it.get("harga_per_unit"), "total": it.get("total"),
+                "jumlah_per_nota": d.get("total_nota") if first else None,
             })
             g["total"] += it.get("total", 0)
+            first = False
     result = sorted(groups.values(), key=lambda x: x["sumber_dana"])
     for g in result:
         g["total"] = round(g["total"], 2)
     return {"groups": result}
+
+
+@api_router.get("/reports/arus-kas")
+async def report_arus_kas(user: dict = Depends(get_current_user),
+                          periode: str = Query(...), sumber_dana: Optional[str] = Query(None)):
+    q = {"tanggal_nota": {"$regex": f"^{periode}"}}
+    if sumber_dana and sumber_dana != "all":
+        q["sumber_dana"] = sumber_dana
+    docs = await db.notas.find(q).to_list(10000)
+    sd_master = await db.sumber_dana.find({}).sort("kode", 1).to_list(100)
+    sd_names = {s["kode"]: s["nama"] for s in sd_master}
+    target_codes = [sumber_dana] if (sumber_dana and sumber_dana != "all") else [s["kode"] for s in sd_master]
+    master = await db.kode_rekening.find({}).to_list(5000)
+    mmap = {m["kode"]: m for m in master}
+    inputs = await db.arus_kas_input.find({"periode": periode}).to_list(100)
+    imap = {i["sumber_dana"]: i for i in inputs}
+
+    result = []
+    for code in target_codes:
+        belanja_acc = {}
+        for d in docs:
+            if d.get("sumber_dana") != code:
+                continue
+            for it in d.get("items", []):
+                if it.get("jenis") != "belanja":
+                    continue
+                k = it.get("kode_rekening", "-") or "-"
+                belanja_acc[k] = belanja_acc.get(k, 0.0) + it.get("total", 0)
+        belanja_rows = [{"kode": k, "nama": mmap.get(k, {}).get("nama", k), "nilai": round(v, 2)}
+                        for k, v in sorted(belanja_acc.items(), key=lambda kv: _kode_sort_key(kv[0]))]
+        total_belanja = sum(r["nilai"] for r in belanja_rows)
+        inp = imap.get(code, {})
+        penambahan = {
+            "modal_awal": inp.get("modal_awal", 0), "penjualan": inp.get("penjualan", 0),
+            "penambahan_modal": inp.get("penambahan_modal", 0),
+            "kas_bulan_lalu_belum_disetor": inp.get("kas_bulan_lalu_belum_disetor", 0),
+            "sponsor_sisa": inp.get("sponsor_sisa", 0), "penambahan_lain": inp.get("penambahan_lain", 0),
+        }
+        jumlah_penambahan = sum(penambahan.values())
+        setoran_lalu = inp.get("setoran_kas_bulan_lalu", 0)
+        setoran_ini = inp.get("setoran_kas_bulan_ini", 0)
+        jumlah_pengeluaran = total_belanja + setoran_lalu + setoran_ini
+        kas_belum_disetor = round(jumlah_penambahan - jumlah_pengeluaran, 2)
+        result.append({
+            "sumber_dana": code, "sumber_dana_nama": sd_names.get(code, code),
+            "penambahan": penambahan, "jumlah_penambahan": round(jumlah_penambahan, 2),
+            "belanja": belanja_rows, "total_belanja": round(total_belanja, 2),
+            "setoran_kas_bulan_lalu": setoran_lalu, "setoran_kas_bulan_ini": setoran_ini,
+            "jumlah_pengeluaran": round(jumlah_pengeluaran, 2), "kas_belum_disetor": kas_belum_disetor,
+        })
+    return {"periode": periode, "groups": result}
+
+
+@api_router.get("/arus-kas-input")
+async def get_arus_kas_input(user: dict = Depends(get_current_user),
+                             periode: str = Query(...), sumber_dana: str = Query(...)):
+    doc = await db.arus_kas_input.find_one({"periode": periode, "sumber_dana": sumber_dana})
+    return _serialize(doc) if doc else {}
+
+
+@api_router.post("/arus-kas-input")
+async def save_arus_kas_input(payload: ArusKasInput, user: dict = Depends(get_current_user)):
+    doc = payload.model_dump()
+    await db.arus_kas_input.update_one(
+        {"periode": doc["periode"], "sumber_dana": doc["sumber_dana"]},
+        {"$set": doc}, upsert=True)
+    return {"message": "Data arus kas disimpan"}
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -536,10 +645,26 @@ async def startup():
         await db.users.update_one({"username": admin_username},
                                   {"$set": {"password_hash": hash_password(admin_password)}})
 
-    # seed default kegiatan & kode rekening if empty
+    # seed default master data if empty
     if await db.kegiatan.count_documents({}) == 0:
-        for n in ["Operasional", "Pengembangan", "Lainnya"]:
+        for n in ["Operasional", "Pengembangan", "Lain-lain"]:
             await db.kegiatan.insert_one({"nama": n, "keterangan": "", "created_at": now_utc().isoformat()})
+    if await db.sumber_dana.count_documents({}) == 0:
+        for kode, nama in [("K", "Kasir"), ("TF", "Transfer Bank"), ("KOP", "Koperasi"), ("PENG", "Pengembangan")]:
+            await db.sumber_dana.insert_one({"kode": kode, "nama": nama, "created_at": now_utc().isoformat()})
+    if await db.kode_rekening.count_documents({}) == 0:
+        seed_kr = [
+            ("1.1", "PENDAPATAN PENJUALAN", "pendapatan"), ("1.2", "PENDAPATAN DILUAR OPERASI", "pendapatan"),
+            ("1.3", "PENDAPATAN LAIN-LAIN", "pendapatan"), ("1.4", "PINJAMAN", "pendapatan"),
+            ("2.1", "BELANJA GAJI", "belanja"), ("2.2", "BELANJA BAHAN BAKU", "belanja"),
+            ("2.3", "BELANJA OVERHEAD PRODUK", "belanja"), ("2.4", "BELANJA MODAL ASET", "belanja"),
+            ("2.5", "BELANJA SEWA", "belanja"), ("2.6", "BELANJA ANGSURAN", "belanja"),
+            ("2.7", "BELANJA PAJAK", "belanja"), ("2.8", "BELANJA ADMIN BANK", "belanja"),
+            ("2.9", "BELANJA BENSIN", "belanja"), ("2.10", "BELANJA LAIN-LAIN", "belanja"),
+            ("2.11", "DEVIDEN BULAN SEBELUMNYA YANG DIBAGIKAN", "dialokasikan"),
+        ]
+        for kode, nama, jenis in seed_kr:
+            await db.kode_rekening.insert_one({"kode": kode, "nama": nama, "jenis": jenis, "created_at": now_utc().isoformat()})
 
 
 @api_router.get("/")

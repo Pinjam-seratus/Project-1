@@ -12,13 +12,6 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell,
 } from "recharts";
 
-const sumberDanaColor = {
-  kasir: "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300",
-  transfer: "bg-blue-100 text-blue-800 border-blue-300 dark:bg-blue-950/50 dark:text-blue-300",
-  koperasi: "bg-purple-100 text-purple-800 border-purple-300 dark:bg-purple-950/50 dark:text-purple-300",
-  pengembangan: "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300",
-};
-
 const StatCard = ({ title, value, icon: Icon, accent, testid }) => (
   <Card className="p-5 relative overflow-hidden" data-testid={testid}>
     <div className={`absolute left-0 top-0 h-full w-1 ${accent}`} />
@@ -38,22 +31,27 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [summary, setSummary] = useState(null);
   const [notas, setNotas] = useState([]);
+  const [sumberDana, setSumberDana] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const [s, n] = await Promise.all([
+        const [s, n, sd] = await Promise.all([
           api.get("/reports/summary"),
           api.get("/nota"),
+          api.get("/master/sumber-dana"),
         ]);
         setSummary(s.data);
         setNotas(n.data);
+        setSumberDana(sd.data);
       } finally {
         setLoading(false);
       }
     })();
   }, []);
+
+  const sdName = (kode) => sumberDana.find((x) => x.kode === kode)?.nama || kode;
 
   if (loading)
     return <div className="flex justify-center py-20"><Loader2 className="h-7 w-7 animate-spin text-accent" /></div>;
@@ -124,12 +122,12 @@ export default function Dashboard() {
                     <p className="font-medium text-sm truncate">{n.nomor_nota}</p>
                     <div className="flex items-center gap-2 mt-0.5">
                       <span className="text-xs text-muted-foreground">{formatTanggal(n.tanggal_nota)}</span>
-                      <Badge variant="outline" className={`text-[10px] px-1.5 py-0 capitalize ${sumberDanaColor[n.sumber_dana] || ""}`}>{n.sumber_dana}</Badge>
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0">{sdName(n.sumber_dana)}</Badge>
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className={`font-mono font-semibold text-sm tabular-nums ${n.jenis === "pendapatan" ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
-                      {n.jenis === "pendapatan" ? "+" : "-"}{formatRupiah(n.total_nota)}
+                    <p className="font-mono font-semibold text-sm tabular-nums">
+                      {formatRupiah(n.total_nota)}
                     </p>
                   </div>
                 </div>

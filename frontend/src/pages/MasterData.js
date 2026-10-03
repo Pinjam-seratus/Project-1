@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import api, { API, formatApiError } from "@/lib/api";
-import { formatRupiah } from "@/lib/format";
+import api, { formatApiError } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,43 +19,58 @@ import {
 import { Plus, Upload, Pencil, Trash2, Loader2, Database, Download } from "lucide-react";
 import { toast } from "sonner";
 
+const jenisBadge = {
+  pendapatan: "bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300",
+  belanja: "bg-rose-50 text-rose-700 border-rose-300 dark:bg-rose-950/40 dark:text-rose-300",
+  dialokasikan: "bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/40 dark:text-amber-300",
+};
+
 const KINDS = {
   "kode-rekening": {
     label: "Kode Rekening",
     columns: [
       { key: "kode", label: "Kode" },
-      { key: "nama", label: "Nama" },
-      { key: "jenis", label: "Jenis" },
+      { key: "nama", label: "Nama Rekening" },
+      { key: "jenis", label: "Jenis", type: "jenis" },
     ],
-    empty: { kode: "", nama: "", jenis: "pengeluaran" },
-    template: "kode,nama,jenis\n4.1.01,Iuran Siswa,pendapatan\n5.1.01,Belanja ATK,pengeluaran",
+    empty: { kode: "", nama: "", jenis: "" },
+    template: "kode,nama,jenis\n1.1,PENDAPATAN PENJUALAN,pendapatan\n2.2,BELANJA BAHAN BAKU,belanja\n2.11,DEVIDEN DIBAGIKAN,dialokasikan",
   },
   kegiatan: {
-    label: "Kegiatan",
+    label: "Kategori",
     columns: [
-      { key: "nama", label: "Nama" },
+      { key: "nama", label: "Nama Kategori" },
       { key: "keterangan", label: "Keterangan" },
     ],
     empty: { nama: "", keterangan: "" },
-    template: "nama,keterangan\nOperasional,Kegiatan harian\nPengembangan,Program pengembangan",
+    template: "nama,keterangan\nOperasional,Kegiatan harian\nPengembangan,Program pengembangan\nLain-lain,Lainnya",
   },
   "item-barang": {
     label: "Item Barang",
     columns: [
-      { key: "nama", label: "Nama" },
-      { key: "satuan", label: "Satuan" },
-      { key: "harga_default", label: "Harga Default", money: true },
+      { key: "nama", label: "Nama Barang" },
+      { key: "kode_rek", label: "Kode Rekening", type: "kode_rek" },
+      { key: "kategori", label: "Kategori", type: "kategori" },
     ],
-    empty: { nama: "", satuan: "pcs", harga_default: 0 },
-    template: "nama,satuan,harga_default\nKertas A4,rim,55000\nPulpen,pcs,3000",
+    empty: { nama: "", kode_rek: "", kategori: "" },
+    template: "NAMA BARANG,KODE REK,SUMBER REK\n12OZ FROSTED,2.2,operasional\nGAJI KARYAWAN,2.1,operasional",
+  },
+  "sumber-dana": {
+    label: "Sumber Dana",
+    columns: [
+      { key: "kode", label: "Kode" },
+      { key: "nama", label: "Nama" },
+    ],
+    empty: { kode: "", nama: "" },
+    template: "kode,nama\nK,Kasir\nTF,Transfer Bank\nKOP,Koperasi\nPENG,Pengembangan",
   },
 };
 
-function MasterTable({ kind }) {
+function MasterTable({ kind, kodeOptions, kategoriOptions, refreshOptions }) {
   const cfg = KINDS[kind];
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [dialog, setDialog] = useState(null); // {mode, data}
+  const [dialog, setDialog] = useState(null);
   const [form, setForm] = useState(cfg.empty);
   const [deleteId, setDeleteId] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -83,17 +97,17 @@ function MasterTable({ kind }) {
 
   const save = async () => {
     for (const c of cfg.columns) {
-      if (c.key !== "keterangan" && c.key !== "satuan" && !String(form[c.key] ?? "").trim() && !c.money)
+      const optional = ["keterangan", "kode_rek", "kategori", "jenis", "kode"].includes(c.key);
+      if (!optional && !String(form[c.key] ?? "").trim())
         return toast.error(`${c.label} wajib diisi`);
     }
     try {
-      const payload = { ...form };
-      if ("harga_default" in payload) payload.harga_default = Number(payload.harga_default) || 0;
-      if (dialog.mode === "add") await api.post(`/master/${kind}`, payload);
-      else await api.put(`/master/${kind}/${dialog.id}`, payload);
+      if (dialog.mode === "add") await api.post(`/master/${kind}`, form);
+      else await api.put(`/master/${kind}/${dialog.id}`, form);
       toast.success("Data disimpan");
       setDialog(null);
       load();
+      refreshOptions?.();
     } catch (err) {
       toast.error(formatApiError(err, "Gagal menyimpan"));
     }
@@ -105,6 +119,7 @@ function MasterTable({ kind }) {
       toast.success("Data dihapus");
       setDeleteId(null);
       load();
+      refreshOptions?.();
     } catch {
       toast.error("Gagal menghapus");
     }
@@ -123,6 +138,7 @@ function MasterTable({ kind }) {
       toast.success(data.message);
       if (data.errors?.length) toast.warning(`${data.errors.length} baris gagal`);
       load();
+      refreshOptions?.();
     } catch (err) {
       toast.error(formatApiError(err, "Gagal import"));
     } finally {
@@ -139,6 +155,14 @@ function MasterTable({ kind }) {
     a.download = `template-${kind}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const renderCell = (row, c) => {
+    if (c.type === "jenis")
+      return <Badge variant="outline" className={`capitalize ${jenisBadge[row.jenis] || ""}`}>{row.jenis || "-"}</Badge>;
+    if (c.key === "kode_rek")
+      return <span className="font-mono text-xs">{row.kode_rek ? `${row.kode_rek}${row.kode_rek_nama ? " — " + row.kode_rek_nama : ""}` : "-"}</span>;
+    return <span className="capitalize">{row[c.key] || "-"}</span>;
   };
 
   return (
@@ -173,7 +197,7 @@ function MasterTable({ kind }) {
               <thead>
                 <tr className="bg-muted/50 text-muted-foreground border-b border-border">
                   {cfg.columns.map((c) => (
-                    <th key={c.key} className={`font-semibold text-xs uppercase px-4 py-3 ${c.money ? "text-right" : "text-left"}`}>{c.label}</th>
+                    <th key={c.key} className="text-left font-semibold text-xs uppercase px-4 py-3">{c.label}</th>
                   ))}
                   <th className="text-center font-semibold text-xs uppercase px-4 py-3">Aksi</th>
                 </tr>
@@ -182,11 +206,7 @@ function MasterTable({ kind }) {
                 {rows.map((row) => (
                   <tr key={row.id} className="border-b border-border hover:bg-muted/30 transition-colors" data-testid={`master-row-${row.id}`}>
                     {cfg.columns.map((c) => (
-                      <td key={c.key} className={`px-4 py-3 ${c.money ? "text-right font-mono tabular-nums" : ""}`}>
-                        {c.key === "jenis" ? (
-                          <Badge variant="outline" className={`capitalize ${row.jenis === "pendapatan" ? "bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300" : "bg-rose-50 text-rose-700 border-rose-300 dark:bg-rose-950/40 dark:text-rose-300"}`}>{row.jenis}</Badge>
-                        ) : c.money ? formatRupiah(row[c.key]) : (row[c.key] || "-")}
-                      </td>
+                      <td key={c.key} className="px-4 py-3">{renderCell(row, c)}</td>
                     ))}
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-center gap-1">
@@ -214,19 +234,32 @@ function MasterTable({ kind }) {
           <div className="space-y-4 py-2">
             {cfg.columns.map((c) => (
               <div key={c.key} className="space-y-2">
-                <Label>{c.label}</Label>
-                {c.key === "jenis" ? (
-                  <Select value={form.jenis} onValueChange={(v) => setForm((f) => ({ ...f, jenis: v }))}>
-                    <SelectTrigger data-testid="select-jenis-rekening"><SelectValue /></SelectTrigger>
+                <Label>{c.label} {["jenis", "kode_rek", "kategori", "kode", "keterangan"].includes(c.key) && <span className="text-xs text-muted-foreground">(opsional)</span>}</Label>
+                {c.type === "jenis" ? (
+                  <Select value={form.jenis || undefined} onValueChange={(v) => setForm((f) => ({ ...f, jenis: v }))}>
+                    <SelectTrigger data-testid="select-jenis-rekening"><SelectValue placeholder="Otomatis dari kode (1=pendapatan, 2=belanja)" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="pendapatan">Pendapatan</SelectItem>
-                      <SelectItem value="pengeluaran">Pengeluaran</SelectItem>
+                      <SelectItem value="belanja">Belanja / Pengeluaran</SelectItem>
+                      <SelectItem value="dialokasikan">Dialokasikan</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : c.type === "kode_rek" ? (
+                  <Select value={form.kode_rek || undefined} onValueChange={(v) => setForm((f) => ({ ...f, kode_rek: v }))}>
+                    <SelectTrigger data-testid="select-master-kode-rek"><SelectValue placeholder="Pilih kode rekening" /></SelectTrigger>
+                    <SelectContent>
+                      {kodeOptions?.map((k) => <SelectItem key={k.id} value={k.kode}>{k.kode} — {k.nama}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                ) : c.type === "kategori" ? (
+                  <Select value={form.kategori || undefined} onValueChange={(v) => setForm((f) => ({ ...f, kategori: v }))}>
+                    <SelectTrigger data-testid="select-master-kategori"><SelectValue placeholder="Pilih kategori" /></SelectTrigger>
+                    <SelectContent>
+                      {kategoriOptions?.map((k) => <SelectItem key={k.id} value={k.nama}>{k.nama}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 ) : (
-                  <Input type={c.money ? "number" : "text"} value={form[c.key] ?? ""}
-                    onChange={(e) => setForm((f) => ({ ...f, [c.key]: e.target.value }))}
-                    data-testid={`input-master-${c.key}`} />
+                  <Input value={form[c.key] ?? ""} onChange={(e) => setForm((f) => ({ ...f, [c.key]: e.target.value }))} data-testid={`input-master-${c.key}`} />
                 )}
               </div>
             ))}
@@ -255,21 +288,36 @@ function MasterTable({ kind }) {
 }
 
 export default function MasterData() {
+  const [kodeOptions, setKodeOptions] = useState([]);
+  const [kategoriOptions, setKategoriOptions] = useState([]);
+
+  const refreshOptions = async () => {
+    const [kr, kg] = await Promise.all([
+      api.get("/master/kode-rekening"),
+      api.get("/master/kegiatan"),
+    ]);
+    setKodeOptions(kr.data);
+    setKategoriOptions(kg.data);
+  };
+  useEffect(() => { refreshOptions(); }, []);
+
   return (
     <div className="space-y-6">
       <div>
         <h2 className="font-heading text-xl font-bold tracking-tight">Master Data</h2>
-        <p className="text-sm text-muted-foreground mt-1">Kelola kode rekening, kegiatan, dan item barang</p>
+        <p className="text-sm text-muted-foreground mt-1">Kelola kode rekening, kategori, item barang, dan sumber dana</p>
       </div>
       <Tabs defaultValue="kode-rekening">
-        <TabsList data-testid="tabs-master">
+        <TabsList data-testid="tabs-master" className="flex-wrap h-auto">
           <TabsTrigger value="kode-rekening" data-testid="tab-kode-rekening">Kode Rekening</TabsTrigger>
-          <TabsTrigger value="kegiatan" data-testid="tab-kegiatan">Kegiatan</TabsTrigger>
+          <TabsTrigger value="kegiatan" data-testid="tab-kegiatan">Kategori</TabsTrigger>
           <TabsTrigger value="item-barang" data-testid="tab-item-barang">Item Barang</TabsTrigger>
+          <TabsTrigger value="sumber-dana" data-testid="tab-sumber-dana">Sumber Dana</TabsTrigger>
         </TabsList>
-        <TabsContent value="kode-rekening" className="mt-4"><MasterTable kind="kode-rekening" /></TabsContent>
-        <TabsContent value="kegiatan" className="mt-4"><MasterTable kind="kegiatan" /></TabsContent>
-        <TabsContent value="item-barang" className="mt-4"><MasterTable kind="item-barang" /></TabsContent>
+        <TabsContent value="kode-rekening" className="mt-4"><MasterTable kind="kode-rekening" refreshOptions={refreshOptions} /></TabsContent>
+        <TabsContent value="kegiatan" className="mt-4"><MasterTable kind="kegiatan" refreshOptions={refreshOptions} /></TabsContent>
+        <TabsContent value="item-barang" className="mt-4"><MasterTable kind="item-barang" kodeOptions={kodeOptions} kategoriOptions={kategoriOptions} /></TabsContent>
+        <TabsContent value="sumber-dana" className="mt-4"><MasterTable kind="sumber-dana" /></TabsContent>
       </Tabs>
     </div>
   );
