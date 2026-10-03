@@ -23,23 +23,17 @@ Aplikasi untuk input nota berisi: tanggal nota, tanggal bayar, kode rekening, su
 - Laporan pendapatan-pengeluaran & item per sumber dana + export Excel/PDF.
 - Manajemen user (admin only), role enforcement.
 
-## Implemented (2026-10-03, iter 2 — restructure sesuai contoh user)
-- Struktur per-item: tiap item nota punya kode rekening & kategori sendiri; nomor nota/tanggal/sumber dana per-nota. ✅
-- Kode Rekening format bertingkat (1.x=pendapatan, 2.x=belanja, + dialokasikan), jenis auto dari prefix kode, guard duplikat kode. ✅
-- Item Barang master: NAMA BARANG + KODE REK + SUMBER REK(kategori); pilih item auto-isi kode rekening & kategori. ✅
-- Sumber Dana jadi master data (K/TF/KOP/PENG, bisa tambah). Import Excel menyesuaikan header contoh user. ✅
-- Laporan Pendapatan & Pengeluaran (section per kode rekening: PENDAPATAN/BELANJA/DIALOKASIKAN + TOTAL TRANSAKSI). ✅
-- Laporan Rincian Belanja per Sumber Dana (detail per item, filter jenis/kode/kategori/sumber dana/tanggal). ✅
-- Laporan Rincian Arus Kas per periode+sumber dana dgn input manual (modal awal, penjualan, setoran, dll) → Kas Belum Disetor. ✅
-- Export Excel & PDF semua laporan. ✅
-- Testing agent iter 2: backend 100% (25 tests), frontend 100% E2E. ✅
+## Implemented (2026-10-03, iter 3)
+- Input Nota: user memasukkan TOTAL HARGA per item; harga/unit otomatis = total ÷ unit. ✅
+- Rekap Bulanan: grafik tren pendapatan vs belanja per bulan di Dashboard (/api/reports/rekap-bulanan). ✅
+- Arus Kas diperluas: Saldo Awal + lini penjualan/penambahan modal/pendapatan lainnya/kas bln lalu/sponsor + setoran ke kasir/bank/koperasi + belanja dana pengembangan → Saldo Akhir = saldo awal + penambahan − pengeluaran. ✅
+- Testing iter 3: backend 26/26, frontend E2E 100%. ✅
 
-## Implemented (2026-10-03, iter 1)
-- Auth username/password, master CRUD + import, input nota, daftar nota, dashboard, manajemen user.
+## Backlog / Remaining (Arus Kas fidelitas penuh — menunggu konfirmasi user)
+- Laporan RINGKASAN Arus Kas per akun (Kas Kasir / Rekening Bank / Rekening Koperasi) dgn Saldo Awal/Bertambah/Berkurang/Saldo Akhir + Selisih & penjelasan.
+- Kegiatan Investasi (Dana Pengembangan) & Kegiatan Pemegang Saham (deviden) sesuai Excel.
+- Transfer antar-dana (setoran dari/ke kasir/bank/koperasi) terhubung otomatis antar akun.
+- Carryover saldo awal otomatis dari saldo akhir bulan sebelumnya.
 
-## Backlog / Remaining
-- P1: Sesuaikan detail layout Arus Kas 100% dgn contoh gambar bila user ingin baris spesifik (modal awal hari berikutnya dll).
-- P2: 404 handling PUT/DELETE resource tidak ada.
-
-## Next Tasks
-- Tunggu feedback user atas laporan & import yang sudah disesuaikan.
+## Implemented sebelumnya (iter 1 & 2)
+- Auth username/password, master data (kode rekening/kategori/item/sumber dana) + import, nota per-item, daftar nota, laporan pendapatan-pengeluaran & rincian belanja, manajemen user.

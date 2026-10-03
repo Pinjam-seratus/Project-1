@@ -184,6 +184,28 @@ class TestNota:
 
 # ---------------- reports ----------------
 class TestReports:
+    @pytest.fixture(autouse=True, scope="class")
+    def _seed_nota(self, admin_session):
+        """Ensure a nota exists in this worker's scope (xdist loadscope splits classes)."""
+        payload = {
+            "nomor_nota": "TESTR-001",
+            "tanggal_nota": "2026-01-10",
+            "tanggal_bayar": "2026-01-11",
+            "sumber_dana": "K",
+            "items": [
+                {"nama": "TEST Bahan", "kode_rekening": "2.2", "kategori": "Operasional",
+                 "unit": 10, "harga_per_unit": 5000, "total": 0},
+                {"nama": "TEST Jual", "kode_rekening": "1.1", "kategori": "Operasional",
+                 "unit": 1, "harga_per_unit": 100000, "total": 0},
+            ],
+            "total_nota": 0,
+        }
+        r = admin_session.post(f"{API}/nota", json=payload, timeout=15)
+        nid = r.json().get("id") if r.status_code == 200 else None
+        yield
+        if nid:
+            admin_session.delete(f"{API}/nota/{nid}")
+
     def test_pendapatan_pengeluaran(self, admin_session):
         r = admin_session.get(f"{API}/reports/pendapatan-pengeluaran", timeout=15)
         assert r.status_code == 200
@@ -218,17 +240,20 @@ class TestReports:
     def test_arus_kas_input_save_and_get(self, admin_session):
         payload = {
             "periode": "2026-01", "sumber_dana": "K",
-            "modal_awal": 500000, "penjualan": 200000, "penambahan_modal": 0,
+            "saldo_awal": 1000000, "penjualan": 500000, "penambahan_modal": 0,
+            "pendapatan_lainnya": 0,
             "kas_bulan_lalu_belum_disetor": 0, "sponsor_sisa": 0, "penambahan_lain": 0,
-            "setoran_kas_bulan_lalu": 0, "setoran_kas_bulan_ini": 100000,
+            "setoran_ke_kasir": 0, "setoran_ke_bank": 0, "setoran_ke_koperasi": 100000,
+            "belanja_dana_pengembangan": 0,
         }
         r = admin_session.post(f"{API}/arus-kas-input", json=payload, timeout=15)
         assert r.status_code == 200
         g = admin_session.get(f"{API}/arus-kas-input?periode=2026-01&sumber_dana=K", timeout=15)
         assert g.status_code == 200
         d = g.json()
-        assert d.get("modal_awal") == 500000
-        assert d.get("penjualan") == 200000
+        assert d.get("saldo_awal") == 1000000
+        assert d.get("penjualan") == 500000
+        assert d.get("setoran_ke_koperasi") == 100000
 
     def test_arus_kas_report(self, admin_session):
         r = admin_session.get(f"{API}/reports/arus-kas?periode=2026-01&sumber_dana=K", timeout=15)
@@ -238,15 +263,37 @@ class TestReports:
         assert len(d["groups"]) == 1
         g = d["groups"][0]
         assert g["sumber_dana"] == "K"
-        # jumlah_penambahan should include modal_awal + penjualan = 700000
-        assert g["jumlah_penambahan"] == 700000
-        # belanja from any existing nota with sumber=K
-        assert g["total_belanja"] >= 0
-        # jumlah_pengeluaran = total_belanja + setoran_lalu + setoran_ini
-        expected = g["total_belanja"] + g["setoran_kas_bulan_lalu"] + g["setoran_kas_bulan_ini"]
-        assert round(g["jumlah_pengeluaran"], 2) == round(expected, 2)
-        # kas_belum_disetor = jumlah_penambahan - jumlah_pengeluaran
-        assert round(g["kas_belum_disetor"], 2) == round(g["jumlah_penambahan"] - g["jumlah_pengeluaran"], 2)
+        # saldo_awal echoed
+        assert g["saldo_awal"] == 1000000
+        # jumlah_penambahan = penjualan 500000 (others 0)
+        assert g["jumlah_penambahan"] == 500000
+        # belanja from nota with sumber=K (previous test created kode 2.2 total 50000)
+        assert g["total_belanja"] >= 50000
+        # pengeluaran_lain structure present
+        assert "pengeluaran_lain" in g
+        assert g["pengeluaran_lain"]["setoran_ke_koperasi"] == 100000
+        # jumlah_pengeluaran = total_belanja + sum(pengeluaran_lain)
+        expected_pengeluaran = g["total_belanja"] + sum(g["pengeluaran_lain"].values())
+        assert round(g["jumlah_pengeluaran"], 2) == round(expected_pengeluaran, 2)
+        # saldo_akhir = saldo_awal + jumlah_penambahan - jumlah_pengeluaran
+        assert round(g["saldo_akhir"], 2) == round(
+            g["saldo_awal"] + g["jumlah_penambahan"] - g["jumlah_pengeluaran"], 2
+        )
+        # kas_belum_disetor removed from new API
+        assert "kas_belum_disetor" not in g
+
+    def test_rekap_bulanan(self, admin_session):
+        r = admin_session.get(f"{API}/reports/rekap-bulanan?year=2026", timeout=15)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["year"] == "2026"
+        assert isinstance(d["data"], list) and len(d["data"]) == 12
+        # Jan should have our test totals (pendapatan 100000, belanja 50000)
+        jan = d["data"][0]
+        assert jan["bulan"] == "Jan"
+        assert jan["pendapatan"] >= 100000
+        assert jan["belanja"] >= 50000
+        assert round(d["saldo"], 2) == round(d["total_pendapatan"] - d["total_belanja"], 2)
 
     def test_arus_kas_all_sumber(self, admin_session):
         r = admin_session.get(f"{API}/reports/arus-kas?periode=2026-01", timeout=15)
