@@ -1,0 +1,183 @@
+{
+  "project_overview": {
+    "app_name": "Aplikasi Input Nota & Pelaporan Keuangan (FinNota)",
+    "app_type": "dashboard / saas_app (Aplikasi Akuntansi & Bookkeeping Internal)",
+    "target_audience": "Admin Keuangan, Kasir, Pengelola Koperasi, dan Manajemen Internal",
+    "language": "Bahasa Indonesia",
+    "currency": "Rupiah (Rp)",
+    "theme_mode": "Light / Dark toggleable (Default: Light Clean Finance with High-Contrast Navy/Slate accent)"
+  },
+  "typography": {
+    "heading_font": "Plus Jakarta Sans, sans-serif",
+    "body_font": "Inter, sans-serif",
+    "financial_figures_font": "JetBrains Mono, monospace (dengan CSS font-variant-numeric: tabular-nums)",
+    "font_files": [
+      "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap"
+    ],
+    "scale": {
+      "h1_hero": "text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight",
+      "h2_section": "text-xl sm:text-2xl font-bold tracking-tight",
+      "h3_card_title": "text-base sm:text-lg font-semibold tracking-tight",
+      "body_base": "text-sm sm:text-base font-normal leading-relaxed",
+      "body_small": "text-xs sm:text-sm font-medium text-muted-foreground",
+      "table_header": "text-xs font-semibold uppercase tracking-wider text-muted-foreground",
+      "table_cell_money": "font-mono font-medium text-right tabular-nums text-foreground"
+    }
+  },
+  "color_palette": {
+    "archetype": "High-Contrast Professional Swiss Finance & Bookkeeping",
+    "light_mode": {
+      "background": "#F8FAFC (slate-50)",
+      "foreground": "#0F172A (slate-900)",
+      "card": "#FFFFFF (white)",
+      "card_foreground": "#0F172A (slate-900)",
+      "popover": "#FFFFFF (white)",
+      "popover_foreground": "#0F172A (slate-900)",
+      "primary": "#0F172A (slate-900 dark navy button/accent)",
+      "primary_foreground": "#F8FAFC (white/slate-50)",
+      "secondary": "#F1F5F9 (slate-100)",
+      "secondary_foreground": "#0F172A (slate-900)",
+      "muted": "#F1F5F9 (slate-100)",
+      "muted_foreground": "#64748B (slate-500)",
+      "accent": "#0284C7 (sky-600) / #059669 (emerald-600)",
+      "accent_foreground": "#FFFFFF",
+      "border": "#E2E8F0 (slate-200)",
+      "input": "#E2E8F0 (slate-200)",
+      "ring": "#0F172A (slate-900)"
+    },
+    "dark_mode": {
+      "background": "#0B0F17 (deep obsidian slate)",
+      "foreground": "#F8FAFC (slate-50)",
+      "card": "#111827 (gray-900)",
+      "card_foreground": "#F8FAFC (slate-50)",
+      "popover": "#111827 (gray-900)",
+      "popover_foreground": "#F8FAFC (slate-50)",
+      "primary": "#1E293B (slate-800)",
+      "primary_foreground": "#F8FAFC (white)",
+      "secondary": "#1E293B (slate-800)",
+      "secondary_foreground": "#F8FAFC (slate-50)",
+      "muted": "#1E293B (slate-800)",
+      "muted_foreground": "#94A3B8 (slate-400)",
+      "accent": "#38BDF8 (sky-400)",
+      "accent_foreground": "#0F172A",
+      "border": "#1E293B (slate-800)",
+      "input": "#1E293B (slate-800)",
+      "ring": "#38BDF8 (sky-400)"
+    },
+    "semantic_financial_colors": {
+      "pendapatan_income": {
+        "text": "text-emerald-700 dark:text-emerald-400",
+        "badge_bg": "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800",
+        "border": "border-emerald-500",
+        "chart_hex": "#10B981"
+      },
+      "pengeluaran_expense": {
+        "text": "text-rose-700 dark:text-rose-400",
+        "badge_bg": "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800",
+        "border": "border-rose-500",
+        "chart_hex": "#F43F5E"
+      },
+      "saldo_net": {
+        "text": "text-sky-700 dark:text-sky-400",
+        "badge_bg": "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800",
+        "chart_hex": "#0284C7"
+      }
+    },
+    "sumber_dana_tags": {
+      "kasir": "bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300 border-amber-300 dark:border-amber-800",
+      "transfer": "bg-blue-100 text-blue-800 dark:bg-blue-950/50 dark:text-blue-300 border-blue-300 dark:border-blue-800",
+      "koperasi": "bg-purple-100 text-purple-800 dark:bg-purple-950/50 dark:text-purple-300 border-purple-300 dark:border-purple-800",
+      "pengembangan": "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800"
+    },
+    "kegiatan_tags": {
+      "operasional": "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-300",
+      "pengembangan": "bg-teal-100 text-teal-800 dark:bg-teal-950/50 dark:text-teal-300",
+      "lainnya": "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300"
+    }
+  },
+  "surface_and_elevation": {
+    "card_style": "bg-card text-card-foreground border border-border shadow-sm hover:shadow-md transition-shadow duration-200 rounded-xl",
+    "stat_widget": "bg-card p-5 sm:p-6 border border-border rounded-xl shadow-xs relative overflow-hidden",
+    "glass_header": "sticky top-0 z-40 bg-background/80 backdrop-blur-md border-b border-border px-4 sm:px-8 py-3.5",
+    "form_container": "bg-card border border-border rounded-xl p-6 sm:p-8 shadow-sm"
+  },
+  "spacing_and_layout": {
+    "container_padding": "px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto space-y-6 sm:space-y-8",
+    "sidebar_width": "w-64 flex-shrink-0",
+    "grid_dashboard": "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6",
+    "grid_reports": "grid grid-cols-1 lg:grid-cols-12 gap-6"
+  },
+  "component_styling": {
+    "currency_display": {
+      "format": "Rp 1.250.000 (Rupiah dengan titik sebagai pemisah ribuan)",
+      "alignment": "text-right font-mono tabular-nums",
+      "helper": "Gunakan fungsi formatRupiah(number) konsisten di semua komponen tabel, kartu, dan laporan"
+    },
+    "input_nota_form": {
+      "header_section": "flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 pb-4 border-b border-border",
+      "item_table": {
+        "container": "overflow-x-auto rounded-lg border border-border my-4",
+        "header": "bg-muted/50 text-muted-foreground font-semibold text-xs uppercase px-4 py-3 text-left",
+        "row": "border-b border-border hover:bg-muted/30 transition-colors",
+        "row_total": "bg-muted/80 font-bold text-foreground font-mono text-base px-4 py-3"
+      },
+      "add_item_button": "w-full sm:w-auto mt-2 border-dashed border-2 border-primary/30 hover:border-primary hover:bg-primary/5 text-primary font-medium py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition-all",
+      "save_button": "bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-6 py-2.5 rounded-lg shadow-sm flex items-center gap-2 transition-colors"
+    },
+    "tables_and_reports": {
+      "action_bar": "flex flex-wrap items-center justify-between gap-4 bg-card p-4 rounded-xl border border-border mb-6",
+      "filter_inputs": "flex flex-wrap items-center gap-3",
+      "export_buttons": {
+        "excel": "bg-emerald-600 hover:bg-emerald-700 text-white font-medium px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors",
+        "pdf": "bg-rose-600 hover:bg-rose-700 text-white font-medium px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+      }
+    }
+  },
+  "master_data_management": {
+    "excel_import_box": "border-2 border-dashed border-muted-foreground/30 hover:border-primary/50 bg-muted/20 hover:bg-muted/40 p-6 rounded-xl text-center cursor-pointer transition-colors",
+    "master_data_tabs": "Kode Rekening | Kegiatan | Item Barang"
+  },
+  "testing_and_accessibility": {
+    "data_testid_convention": "All interactive elements and key text metrics MUST include data-testid with kebab-case identifiers",
+    "examples": [
+      "data-testid=\"sidebar-link-dashboard\"",
+      "data-testid=\"sidebar-link-input-nota\"",
+      "data-testid=\"sidebar-link-master-data\"",
+      "data-testid=\"sidebar-link-laporan\"",
+      "data-testid=\"sidebar-link-manajemen-user\"",
+      "data-testid=\"input-nomor-nota\"",
+      "data-testid=\"input-tanggal-nota\"",
+      "data-testid=\"input-tanggal-bayar\"",
+      "data-testid=\"select-kode-rekening\"",
+      "data-testid=\"select-sumber-dana\"",
+      "data-testid=\"select-kegiatan\"",
+      "data-testid=\"btn-tambah-item\"",
+      "data-testid=\"btn-simpan-nota\"",
+      "data-testid=\"stat-total-pendapatan\"",
+      "data-testid=\"stat-total-pengeluaran\"",
+      "data-testid=\"stat-saldo-net\"",
+      "data-testid=\"btn-export-excel\"",
+      "data-testid=\"btn-export-pdf\""
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Format semua nilai uang menggunakan format Rupiah Indonesia (contoh: Rp 1.500.000). Gunakan font-mono tabular-nums untuk perataan angka.",
+    "Form Input Nota harus mendukung penambahan baris item barang secara dinamis tanpa batasan, menghitung subtotal per baris secara otomatis (Unit x Harga Per Unit) dan total keseluruhan nota secara real-time.",
+    "Komponen Master Data harus menyediakan fitur Tambah Manual (Modal / Form) dan Import dari Excel file (.xlsx / .csv) untuk Kode Rekening, Kegiatan, dan Item Barang.",
+    "Data Item Barang pada tabel input nota berisikan dropdown/select searchable untuk memilih barang dari master data database.",
+    "Tabel Laporan harus mendukung filter Tanggal (Start Date - End Date), Kode Rekening, Kegiatan, dan Sumber Dana, serta ekspor file Excel (.xlsx via xlsx/exceljs) dan PDF (.pdf via jspdf / html2pdf / print view).",
+    "Semua komponen JS (bukan TSX) harus responsif, modern, bersih, dan menyertakan data-testid di setiap tombol, input, select, dan nilai indikator.",
+    "Gunakan Sonner untuk notifikasi toast (misal: 'Nota Berhasil Disimpan', 'Master Data Berhasil Diimport', 'Data Gagal Diperbarui').",
+    "Pastikan menu Manajemen User hanya dapat diakses oleh role Admin."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": {
+    "ui_ux_standards": [
+      "Setiap tombol, input, dropdown, dan kartu statistik wajib memiliki atribut data-testid",
+      "Jangan gunakan 'Inter' untuk Judul Utama (Headings) — gunakan 'Plus Jakarta Sans'",
+      "Pastikan angka keuangan menggunakan font monospace tabular-nums dan rata kanan di tabel",
+      "Sediakan empty state yang informatif dan estetik bila data belum tersedia",
+      "Sediakan tombol toggle mode Gelap/Terang (Dark/Light Mode)",
+      "Pastikan kontras teks memenuhi standar WCAG AA dan tidak ada latar belakang transparan penuh tanpa filter backdrop blur"
+    ]
+  }
+}

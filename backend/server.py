@@ -1,0 +1,728 @@
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Query
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, Field, BeforeValidator, ConfigDict
+from typing import List, Optional, Annotated, Any
+from datetime import datetime, timezone, timedelta
+from bson import ObjectId
+import logging
+import jwt
+import bcrypt
+import io
+import pandas as pd
+
+# ---------------------------------------------------------------------------
+# DB setup
+# ---------------------------------------------------------------------------
+mongo_url = os.environ['MONGO_URL']
+client = AsyncIOMotorClient(mongo_url)
+db = client[os.environ['DB_NAME']]
+
+JWT_SECRET = os.environ['JWT_SECRET']
+JWT_ALGORITHM = "HS256"
+
+app = FastAPI()
+api_router = APIRouter(prefix="/api")
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Mongo helpers
+# ---------------------------------------------------------------------------
+PyObjectId = Annotated[str, BeforeValidator(str)]
+
+
+class BaseDocument(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True)
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
+
+    @classmethod
+    def from_mongo(cls, doc: dict):
+        if not doc:
+            return None
+        return cls(**doc)
+
+    def to_mongo(self) -> dict:
+        data = self.model_dump(by_alias=True, exclude_none=True)
+        data.pop("_id", None)
+        return data
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+# ---------------------------------------------------------------------------
+# Auth utils
+# ---------------------------------------------------------------------------
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def create_access_token(user_id: str, username: str, token_version: int = 0) -> str:
+    payload = {"sub": user_id, "username": username, "ver": token_version,
+               "exp": now_utc() + timedelta(hours=12), "type": "access"}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def set_auth_cookie(response: Response, token: str):
+    response.set_cookie(key="access_token", value=token, httponly=True, secure=True,
+                        samesite="none", max_age=43200, path="/")
+
+
+async def get_current_user(request: Request) -> dict:
+    token = request.cookies.get("access_token")
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="Belum login")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Token tidak valid")
+        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+        if not user:
+            raise HTTPException(status_code=401, detail="User tidak ditemukan")
+        if payload.get("ver", 0) != user.get("token_version", 0):
+            raise HTTPException(status_code=401, detail="Sesi berakhir, silakan login kembali")
+        user["_id"] = str(user["_id"])
+        user.pop("password_hash", None)
+        return user
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Sesi berakhir")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token tidak valid")
+
+
+async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Hanya admin yang dapat mengakses")
+    return user
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    name: str
+    role: str = "user"
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    password: Optional[str] = None
+
+
+def jenis_from_kode(kode: str) -> str:
+    """1.x = pendapatan, 2.x = belanja (default)."""
+    k = (kode or "").strip()
+    if k.startswith("1"):
+        return "pendapatan"
+    return "belanja"
+
+
+class KodeRekening(BaseModel):
+    kode: str
+    nama: str
+    jenis: Optional[str] = None  # pendapatan | belanja | dialokasikan (auto from kode if empty)
+
+
+class Kegiatan(BaseModel):
+    nama: str
+    keterangan: Optional[str] = ""
+
+
+class ItemBarang(BaseModel):
+    nama: str
+    kode_rek: Optional[str] = ""
+    kode_rek_nama: Optional[str] = ""
+    kategori: Optional[str] = ""
+
+
+class SumberDana(BaseModel):
+    kode: str
+    nama: str
+
+
+class NotaItem(BaseModel):
+    item_barang_id: Optional[str] = None
+    nama: str
+    kode_rekening: Optional[str] = ""
+    kode_rekening_nama: Optional[str] = ""
+    kategori: Optional[str] = ""
+    jenis: Optional[str] = ""
+    unit: float = 1
+    harga_per_unit: float = 0
+    total: float = 0
+
+
+class NotaCreate(BaseModel):
+    nomor_nota: str
+    tanggal_nota: str
+    tanggal_bayar: Optional[str] = ""
+    sumber_dana: str
+    items: List[NotaItem]
+    total_nota: float = 0
+    keterangan: Optional[str] = ""
+
+
+class ArusKasInput(BaseModel):
+    periode: str  # "YYYY-MM"
+    sumber_dana: str
+    saldo_awal: float = 0
+    penjualan: float = 0
+    penambahan_modal: float = 0
+    pendapatan_lainnya: float = 0
+    kas_bulan_lalu_belum_disetor: float = 0
+    sponsor_sisa: float = 0
+    penambahan_lain: float = 0
+    setoran_ke_kasir: float = 0
+    setoran_ke_bank: float = 0
+    setoran_ke_koperasi: float = 0
+    belanja_dana_pengembangan: float = 0
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+@api_router.post("/auth/login")
+async def login(payload: LoginRequest, response: Response):
+    username = payload.username.strip().lower()
+    user = await db.users.find_one({"username": username})
+    if not user or not verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Username atau password salah")
+    token = create_access_token(str(user["_id"]), username, user.get("token_version", 0))
+    set_auth_cookie(response, token)
+    return {"id": str(user["_id"]), "username": user["username"], "name": user.get("name", ""),
+            "role": user.get("role", "user"), "token": token}
+
+
+@api_router.post("/auth/logout")
+async def logout(response: Response, user: dict = Depends(get_current_user)):
+    response.delete_cookie("access_token", path="/")
+    return {"message": "Logout berhasil"}
+
+
+@api_router.get("/auth/me")
+async def me(user: dict = Depends(get_current_user)):
+    return {"id": user["_id"], "username": user["username"], "name": user.get("name", ""),
+            "role": user.get("role", "user")}
+
+# ---------------------------------------------------------------------------
+# User management (admin only)
+# ---------------------------------------------------------------------------
+
+@api_router.get("/users")
+async def list_users(admin: dict = Depends(require_admin)):
+    users = await db.users.find({}, {"password_hash": 0}).to_list(500)
+    return [{"id": str(u["_id"]), "username": u["username"], "name": u.get("name", ""),
+             "role": u.get("role", "user")} for u in users]
+
+
+@api_router.post("/users")
+async def create_user(payload: UserCreate, admin: dict = Depends(require_admin)):
+    username = payload.username.strip().lower()
+    if await db.users.find_one({"username": username}):
+        raise HTTPException(status_code=400, detail="Username sudah digunakan")
+    doc = {"username": username, "password_hash": hash_password(payload.password),
+           "name": payload.name, "role": payload.role if payload.role in ("admin", "user") else "user",
+           "token_version": 0, "created_at": now_utc().isoformat()}
+    res = await db.users.insert_one(doc)
+    return {"id": str(res.inserted_id), "username": username, "name": payload.name, "role": doc["role"]}
+
+
+@api_router.put("/users/{user_id}")
+async def update_user(user_id: str, payload: UserUpdate, admin: dict = Depends(require_admin)):
+    update = {}
+    if payload.name is not None:
+        update["name"] = payload.name
+    if payload.role in ("admin", "user"):
+        update["role"] = payload.role
+    if payload.password:
+        update["password_hash"] = hash_password(payload.password)
+        update["token_version"] = (await db.users.find_one({"_id": ObjectId(user_id)})).get("token_version", 0) + 1
+    if update:
+        await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update})
+    return {"message": "User diperbarui"}
+
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, admin: dict = Depends(require_admin)):
+    if user_id == admin["_id"]:
+        raise HTTPException(status_code=400, detail="Tidak dapat menghapus akun sendiri")
+    await db.users.delete_one({"_id": ObjectId(user_id)})
+    return {"message": "User dihapus"}
+
+# ---------------------------------------------------------------------------
+# Master data: generic CRUD factory
+# ---------------------------------------------------------------------------
+
+MASTER_COLLECTIONS = {
+    "kode-rekening": ("kode_rekening", KodeRekening),
+    "kegiatan": ("kegiatan", Kegiatan),
+    "item-barang": ("item_barang", ItemBarang),
+    "sumber-dana": ("sumber_dana", SumberDana),
+}
+
+
+def _serialize(doc: dict) -> dict:
+    doc = dict(doc)
+    doc["id"] = str(doc.pop("_id"))
+    return doc
+
+
+async def _enrich_master(kind: str, doc: dict) -> dict:
+    if kind == "kode-rekening" and not doc.get("jenis"):
+        doc["jenis"] = jenis_from_kode(doc.get("kode", ""))
+    if kind == "item-barang" and doc.get("kode_rek"):
+        kr = await db.kode_rekening.find_one({"kode": str(doc["kode_rek"]).strip()})
+        if kr:
+            doc["kode_rek_nama"] = kr.get("nama", "")
+    return doc
+
+
+@api_router.get("/master/{kind}")
+async def list_master(kind: str, user: dict = Depends(get_current_user)):
+    if kind not in MASTER_COLLECTIONS:
+        raise HTTPException(status_code=404, detail="Jenis master data tidak dikenal")
+    coll = MASTER_COLLECTIONS[kind][0]
+    sort_field = "kode" if kind in ("kode-rekening", "sumber-dana") else "nama"
+    docs = await db[coll].find({}).sort(sort_field, 1).to_list(5000)
+    return [_serialize(d) for d in docs]
+
+
+@api_router.post("/master/{kind}")
+async def create_master(kind: str, payload: dict, user: dict = Depends(get_current_user)):
+    if kind not in MASTER_COLLECTIONS:
+        raise HTTPException(status_code=404, detail="Jenis master data tidak dikenal")
+    coll, model = MASTER_COLLECTIONS[kind]
+    obj = model(**payload)
+    doc = await _enrich_master(kind, obj.model_dump())
+    if kind in ("kode-rekening", "sumber-dana") and doc.get("kode"):
+        if await db[coll].find_one({"kode": doc["kode"]}):
+            raise HTTPException(status_code=400, detail=f"Kode '{doc['kode']}' sudah ada")
+    doc["created_at"] = now_utc().isoformat()
+    res = await db[coll].insert_one(doc)
+    return _serialize({**doc, "_id": res.inserted_id})
+
+
+@api_router.put("/master/{kind}/{item_id}")
+async def update_master(kind: str, item_id: str, payload: dict, user: dict = Depends(get_current_user)):
+    if kind not in MASTER_COLLECTIONS:
+        raise HTTPException(status_code=404, detail="Jenis master data tidak dikenal")
+    coll, model = MASTER_COLLECTIONS[kind]
+    obj = model(**payload)
+    doc = await _enrich_master(kind, obj.model_dump())
+    await db[coll].update_one({"_id": ObjectId(item_id)}, {"$set": doc})
+    return {"message": "Data diperbarui"}
+
+
+@api_router.delete("/master/{kind}/{item_id}")
+async def delete_master(kind: str, item_id: str, user: dict = Depends(get_current_user)):
+    if kind not in MASTER_COLLECTIONS:
+        raise HTTPException(status_code=404, detail="Jenis master data tidak dikenal")
+    coll = MASTER_COLLECTIONS[kind][0]
+    await db[coll].delete_one({"_id": ObjectId(item_id)})
+    return {"message": "Data dihapus"}
+
+
+@api_router.post("/master/{kind}/import")
+async def import_master(kind: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    if kind not in MASTER_COLLECTIONS:
+        raise HTTPException(status_code=404, detail="Jenis master data tidak dikenal")
+    coll, model = MASTER_COLLECTIONS[kind]
+    content = await file.read()
+    try:
+        if file.filename.lower().endswith(".csv"):
+            dfr = pd.read_csv(io.BytesIO(content))
+        else:
+            dfr = pd.read_excel(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Gagal membaca file: {e}")
+
+    dfr.columns = [str(c).strip().lower().replace(" ", "_") for c in dfr.columns]
+    inserted = 0
+    errors = []
+
+    def g(row, *keys):
+        for k in keys:
+            if k in row and str(row[k]).strip() != "":
+                return str(row[k]).strip()
+        return ""
+
+    for idx, row in dfr.iterrows():
+        row = {k: ("" if pd.isna(v) else v) for k, v in row.to_dict().items()}
+        try:
+            if kind == "kode-rekening":
+                kode = g(row, "kode", "kode_rek", "kode_rekening")
+                nama = g(row, "nama", "nama_rekening")
+                jenis = g(row, "jenis").lower()
+                if jenis not in ("pendapatan", "belanja", "dialokasikan"):
+                    jenis = jenis_from_kode(kode)
+                doc = {"kode": kode, "nama": nama, "jenis": jenis}
+                if not kode and not nama:
+                    continue
+            elif kind == "kegiatan":
+                doc = {"nama": g(row, "nama", "kategori", "katagori"), "keterangan": g(row, "keterangan")}
+                if not doc["nama"]:
+                    continue
+            elif kind == "sumber-dana":
+                doc = {"kode": g(row, "kode"), "nama": g(row, "nama")}
+                if not doc["nama"]:
+                    continue
+            else:  # item-barang
+                doc = {"nama": g(row, "nama", "nama_barang"),
+                       "kode_rek": g(row, "kode_rek", "kode_rekening", "kode"),
+                       "kategori": g(row, "sumber_rek", "kategori", "katagori")}
+                if not doc["nama"]:
+                    continue
+            doc = await _enrich_master(kind, doc)
+            doc["created_at"] = now_utc().isoformat()
+            await db[coll].insert_one(doc)
+            inserted += 1
+        except Exception as e:
+            errors.append(f"Baris {idx + 2}: {e}")
+    return {"inserted": inserted, "errors": errors[:10],
+            "message": f"{inserted} data berhasil diimport"}
+
+# ---------------------------------------------------------------------------
+# Nota endpoints
+# ---------------------------------------------------------------------------
+
+@api_router.post("/nota")
+async def create_nota(payload: NotaCreate, user: dict = Depends(get_current_user)):
+    doc = payload.model_dump()
+    total = 0.0
+    for it in doc["items"]:
+        if not it.get("jenis"):
+            it["jenis"] = jenis_from_kode(it.get("kode_rekening", ""))
+        it["total"] = round((it.get("unit") or 0) * (it.get("harga_per_unit") or 0), 2)
+        total += it["total"]
+    doc["total_nota"] = round(total, 2)
+    doc["created_at"] = now_utc().isoformat()
+    doc["created_by"] = user.get("name") or user.get("username")
+    res = await db.notas.insert_one(doc)
+    return _serialize({**doc, "_id": res.inserted_id})
+
+
+def _nota_filter(start, end, sumber_dana):
+    q = {}
+    if start or end:
+        rng = {}
+        if start:
+            rng["$gte"] = start
+        if end:
+            rng["$lte"] = end
+        q["tanggal_nota"] = rng
+    if sumber_dana and sumber_dana != "all":
+        q["sumber_dana"] = sumber_dana
+    return q
+
+
+@api_router.get("/nota")
+async def list_nota(user: dict = Depends(get_current_user),
+                    start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+                    sumber_dana: Optional[str] = Query(None)):
+    q = _nota_filter(start, end, sumber_dana)
+    docs = await db.notas.find(q).sort("tanggal_nota", -1).to_list(5000)
+    return [_serialize(d) for d in docs]
+
+
+@api_router.get("/nota/{nota_id}")
+async def get_nota(nota_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.notas.find_one({"_id": ObjectId(nota_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Nota tidak ditemukan")
+    return _serialize(doc)
+
+
+@api_router.delete("/nota/{nota_id}")
+async def delete_nota(nota_id: str, user: dict = Depends(get_current_user)):
+    await db.notas.delete_one({"_id": ObjectId(nota_id)})
+    return {"message": "Nota dihapus"}
+
+# ---------------------------------------------------------------------------
+# Reports
+# ---------------------------------------------------------------------------
+
+@api_router.get("/reports/summary")
+async def report_summary(user: dict = Depends(get_current_user),
+                         start: Optional[str] = Query(None), end: Optional[str] = Query(None)):
+    q = _nota_filter(start, end, None)
+    docs = await db.notas.find(q).to_list(10000)
+    pendapatan = pengeluaran = 0.0
+    for d in docs:
+        for it in d.get("items", []):
+            if it.get("jenis") == "pendapatan":
+                pendapatan += it.get("total", 0)
+            elif it.get("jenis") == "belanja":
+                pengeluaran += it.get("total", 0)
+    return {"total_pendapatan": round(pendapatan, 2), "total_pengeluaran": round(pengeluaran, 2),
+            "saldo": round(pendapatan - pengeluaran, 2), "jumlah_nota": len(docs)}
+
+
+def _item_passes(it, kategori, kode_rekening):
+    if kategori and kategori != "all" and it.get("kategori") != kategori:
+        return False
+    if kode_rekening and kode_rekening != "all" and it.get("kode_rekening") != kode_rekening:
+        return False
+    return True
+
+
+def _kode_sort_key(k):
+    try:
+        return (0,) + tuple(int(p) for p in str(k).split("."))
+    except Exception:
+        return (999, str(k))
+
+
+@api_router.get("/reports/pendapatan-pengeluaran")
+async def report_pp(user: dict = Depends(get_current_user),
+                    start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+                    sumber_dana: Optional[str] = Query(None), kategori: Optional[str] = Query(None)):
+    q = _nota_filter(start, end, sumber_dana)
+    docs = await db.notas.find(q).to_list(10000)
+    acc = {}
+    for d in docs:
+        for it in d.get("items", []):
+            if not _item_passes(it, kategori, None):
+                continue
+            kode = it.get("kode_rekening", "") or "-"
+            acc[kode] = acc.get(kode, 0.0) + it.get("total", 0)
+    master = await db.kode_rekening.find({}).to_list(5000)
+    mmap = {m["kode"]: m for m in master}
+    all_kode = set(mmap.keys()) | set(acc.keys())
+    rows = []
+    for kode in sorted(all_kode, key=_kode_sort_key):
+        m = mmap.get(kode, {})
+        jenis = m.get("jenis") or jenis_from_kode(kode)
+        rows.append({"kode": kode, "nama": m.get("nama", kode), "jenis": jenis,
+                     "nilai": round(acc.get(kode, 0.0), 2)})
+    pendapatan = [r for r in rows if r["jenis"] == "pendapatan"]
+    belanja = [r for r in rows if r["jenis"] == "belanja"]
+    dialokasikan = [r for r in rows if r["jenis"] == "dialokasikan"]
+    tp = sum(r["nilai"] for r in pendapatan)
+    tb = sum(r["nilai"] for r in belanja)
+    td = sum(r["nilai"] for r in dialokasikan)
+    return {"pendapatan": pendapatan, "belanja": belanja, "dialokasikan": dialokasikan,
+            "total_pendapatan": round(tp, 2), "total_belanja": round(tb, 2),
+            "total_dialokasikan": round(td, 2), "total_transaksi": round(tp - tb, 2)}
+
+
+@api_router.get("/reports/rincian-belanja")
+async def report_rincian(user: dict = Depends(get_current_user),
+                         start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+                         sumber_dana: Optional[str] = Query(None), kategori: Optional[str] = Query(None),
+                         kode_rekening: Optional[str] = Query(None), jenis: Optional[str] = Query(None)):
+    q = _nota_filter(start, end, sumber_dana)
+    docs = await db.notas.find(q).sort("tanggal_nota", 1).to_list(10000)
+    groups = {}
+    for d in docs:
+        sd = d.get("sumber_dana", "lainnya")
+        first = True
+        for it in d.get("items", []):
+            if jenis and jenis != "all" and it.get("jenis") != jenis:
+                continue
+            if not _item_passes(it, kategori, kode_rekening):
+                continue
+            g = groups.setdefault(sd, {"sumber_dana": sd, "items": [], "total": 0})
+            g["items"].append({
+                "tanggal_nota": d.get("tanggal_nota"), "tanggal_bayar": d.get("tanggal_bayar"),
+                "nomor_nota": d.get("nomor_nota"), "kode_rekening": it.get("kode_rekening"),
+                "kode_rekening_nama": it.get("kode_rekening_nama"), "kategori": it.get("kategori"),
+                "nama": it.get("nama"), "unit": it.get("unit"),
+                "harga_per_unit": it.get("harga_per_unit"), "total": it.get("total"),
+                "jumlah_per_nota": d.get("total_nota") if first else None,
+            })
+            g["total"] += it.get("total", 0)
+            first = False
+    result = sorted(groups.values(), key=lambda x: x["sumber_dana"])
+    for g in result:
+        g["total"] = round(g["total"], 2)
+    return {"groups": result}
+
+
+@api_router.get("/reports/arus-kas")
+async def report_arus_kas(user: dict = Depends(get_current_user),
+                          periode: str = Query(...), sumber_dana: Optional[str] = Query(None)):
+    q = {"tanggal_nota": {"$regex": f"^{periode}"}}
+    if sumber_dana and sumber_dana != "all":
+        q["sumber_dana"] = sumber_dana
+    docs = await db.notas.find(q).to_list(10000)
+    sd_master = await db.sumber_dana.find({}).sort("kode", 1).to_list(100)
+    sd_names = {s["kode"]: s["nama"] for s in sd_master}
+    target_codes = [sumber_dana] if (sumber_dana and sumber_dana != "all") else [s["kode"] for s in sd_master]
+    master = await db.kode_rekening.find({}).to_list(5000)
+    mmap = {m["kode"]: m for m in master}
+    inputs = await db.arus_kas_input.find({"periode": periode}).to_list(100)
+    imap = {i["sumber_dana"]: i for i in inputs}
+
+    result = []
+    for code in target_codes:
+        belanja_acc = {}
+        for d in docs:
+            if d.get("sumber_dana") != code:
+                continue
+            for it in d.get("items", []):
+                if it.get("jenis") != "belanja":
+                    continue
+                k = it.get("kode_rekening", "-") or "-"
+                belanja_acc[k] = belanja_acc.get(k, 0.0) + it.get("total", 0)
+        belanja_rows = [{"kode": k, "nama": mmap.get(k, {}).get("nama", k), "nilai": round(v, 2)}
+                        for k, v in sorted(belanja_acc.items(), key=lambda kv: _kode_sort_key(kv[0]))]
+        total_belanja = sum(r["nilai"] for r in belanja_rows)
+        inp = imap.get(code, {})
+        saldo_awal = inp.get("saldo_awal", 0)
+        penambahan = {
+            "penjualan": inp.get("penjualan", 0),
+            "penambahan_modal": inp.get("penambahan_modal", 0),
+            "pendapatan_lainnya": inp.get("pendapatan_lainnya", 0),
+            "kas_bulan_lalu_belum_disetor": inp.get("kas_bulan_lalu_belum_disetor", 0),
+            "sponsor_sisa": inp.get("sponsor_sisa", 0),
+            "penambahan_lain": inp.get("penambahan_lain", 0),
+        }
+        jumlah_penambahan = sum(penambahan.values())
+        pengeluaran_lain = {
+            "setoran_ke_kasir": inp.get("setoran_ke_kasir", 0),
+            "setoran_ke_bank": inp.get("setoran_ke_bank", 0),
+            "setoran_ke_koperasi": inp.get("setoran_ke_koperasi", 0),
+            "belanja_dana_pengembangan": inp.get("belanja_dana_pengembangan", 0),
+        }
+        jumlah_pengeluaran = total_belanja + sum(pengeluaran_lain.values())
+        saldo_akhir = round(saldo_awal + jumlah_penambahan - jumlah_pengeluaran, 2)
+        result.append({
+            "sumber_dana": code, "sumber_dana_nama": sd_names.get(code, code),
+            "saldo_awal": saldo_awal,
+            "penambahan": penambahan, "jumlah_penambahan": round(jumlah_penambahan, 2),
+            "belanja": belanja_rows, "total_belanja": round(total_belanja, 2),
+            "pengeluaran_lain": pengeluaran_lain,
+            "jumlah_pengeluaran": round(jumlah_pengeluaran, 2), "saldo_akhir": saldo_akhir,
+        })
+    return {"periode": periode, "groups": result}
+
+
+@api_router.get("/arus-kas-input")
+async def get_arus_kas_input(user: dict = Depends(get_current_user),
+                             periode: str = Query(...), sumber_dana: str = Query(...)):
+    doc = await db.arus_kas_input.find_one({"periode": periode, "sumber_dana": sumber_dana})
+    return _serialize(doc) if doc else {}
+
+
+@api_router.post("/arus-kas-input")
+async def save_arus_kas_input(payload: ArusKasInput, user: dict = Depends(get_current_user)):
+    doc = payload.model_dump()
+    await db.arus_kas_input.update_one(
+        {"periode": doc["periode"], "sumber_dana": doc["sumber_dana"]},
+        {"$set": doc}, upsert=True)
+    return {"message": "Data arus kas disimpan"}
+
+
+@api_router.get("/reports/rekap-bulanan")
+async def rekap_bulanan(user: dict = Depends(get_current_user), year: Optional[str] = Query(None)):
+    yr = year or datetime.now(timezone.utc).strftime("%Y")
+    docs = await db.notas.find({"tanggal_nota": {"$regex": f"^{yr}"}}).to_list(20000)
+    months = {f"{m:02d}": {"pendapatan": 0.0, "belanja": 0.0} for m in range(1, 13)}
+    for d in docs:
+        mm = (d.get("tanggal_nota", "") or "")[5:7]
+        if mm not in months:
+            continue
+        for it in d.get("items", []):
+            if it.get("jenis") == "pendapatan":
+                months[mm]["pendapatan"] += it.get("total", 0)
+            elif it.get("jenis") == "belanja":
+                months[mm]["belanja"] += it.get("total", 0)
+    labels = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+    data = [{"bulan": labels[i],
+             "pendapatan": round(months[f"{i+1:02d}"]["pendapatan"], 2),
+             "belanja": round(months[f"{i+1:02d}"]["belanja"], 2)} for i in range(12)]
+    tp = sum(x["pendapatan"] for x in data)
+    tb = sum(x["belanja"] for x in data)
+    return {"year": yr, "data": data, "total_pendapatan": round(tp, 2),
+            "total_belanja": round(tb, 2), "saldo": round(tp - tb, 2)}
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def startup():
+    await db.users.create_index("username", unique=True)
+    admin_username = os.environ.get("ADMIN_USERNAME", "admin").strip().lower()
+    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    existing = await db.users.find_one({"username": admin_username})
+    if existing is None:
+        await db.users.insert_one({
+            "username": admin_username, "password_hash": hash_password(admin_password),
+            "name": "Administrator", "role": "admin", "token_version": 0,
+            "email": os.environ.get("ADMIN_EMAIL", ""), "created_at": now_utc().isoformat()})
+        logger.info("Admin user seeded")
+    elif not verify_password(admin_password, existing["password_hash"]):
+        await db.users.update_one({"username": admin_username},
+                                  {"$set": {"password_hash": hash_password(admin_password)}})
+
+    # seed default master data if empty
+    if await db.kegiatan.count_documents({}) == 0:
+        for n in ["Operasional", "Pengembangan", "Lain-lain"]:
+            await db.kegiatan.insert_one({"nama": n, "keterangan": "", "created_at": now_utc().isoformat()})
+    if await db.sumber_dana.count_documents({}) == 0:
+        for kode, nama in [("K", "Kasir"), ("TF", "Transfer Bank"), ("KOP", "Koperasi"), ("PENG", "Pengembangan")]:
+            await db.sumber_dana.insert_one({"kode": kode, "nama": nama, "created_at": now_utc().isoformat()})
+    if await db.kode_rekening.count_documents({}) == 0:
+        seed_kr = [
+            ("1.1", "PENDAPATAN PENJUALAN", "pendapatan"), ("1.2", "PENDAPATAN DILUAR OPERASI", "pendapatan"),
+            ("1.3", "PENDAPATAN LAIN-LAIN", "pendapatan"), ("1.4", "PINJAMAN", "pendapatan"),
+            ("2.1", "BELANJA GAJI", "belanja"), ("2.2", "BELANJA BAHAN BAKU", "belanja"),
+            ("2.3", "BELANJA OVERHEAD PRODUK", "belanja"), ("2.4", "BELANJA MODAL ASET", "belanja"),
+            ("2.5", "BELANJA SEWA", "belanja"), ("2.6", "BELANJA ANGSURAN", "belanja"),
+            ("2.7", "BELANJA PAJAK", "belanja"), ("2.8", "BELANJA ADMIN BANK", "belanja"),
+            ("2.9", "BELANJA BENSIN", "belanja"), ("2.10", "BELANJA LAIN-LAIN", "belanja"),
+            ("2.11", "DEVIDEN BULAN SEBELUMNYA YANG DIBAGIKAN", "dialokasikan"),
+        ]
+        for kode, nama, jenis in seed_kr:
+            await db.kode_rekening.insert_one({"kode": kode, "nama": nama, "jenis": jenis, "created_at": now_utc().isoformat()})
+
+
+@api_router.get("/")
+async def root():
+    return {"message": "FinNota API"}
+
+
+app.include_router(api_router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=[os.environ.get("FRONTEND_URL", "http://localhost:3000"), "http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
