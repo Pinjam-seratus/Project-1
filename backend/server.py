@@ -138,10 +138,18 @@ class UserUpdate(BaseModel):
     password: Optional[str] = None
 
 
+def jenis_from_kode(kode: str) -> str:
+    """1.x = pendapatan, 2.x = belanja (default)."""
+    k = (kode or "").strip()
+    if k.startswith("1"):
+        return "pendapatan"
+    return "belanja"
+
+
 class KodeRekening(BaseModel):
     kode: str
     nama: str
-    jenis: str  # pendapatan | pengeluaran
+    jenis: Optional[str] = None  # pendapatan | belanja | dialokasikan (auto from kode if empty)
 
 
 class Kegiatan(BaseModel):
@@ -151,13 +159,23 @@ class Kegiatan(BaseModel):
 
 class ItemBarang(BaseModel):
     nama: str
-    satuan: Optional[str] = "pcs"
-    harga_default: Optional[float] = 0
+    kode_rek: Optional[str] = ""
+    kode_rek_nama: Optional[str] = ""
+    kategori: Optional[str] = ""
+
+
+class SumberDana(BaseModel):
+    kode: str
+    nama: str
 
 
 class NotaItem(BaseModel):
     item_barang_id: Optional[str] = None
     nama: str
+    kode_rekening: Optional[str] = ""
+    kode_rekening_nama: Optional[str] = ""
+    kategori: Optional[str] = ""
+    jenis: Optional[str] = ""
     unit: float = 1
     harga_per_unit: float = 0
     total: float = 0
@@ -167,14 +185,23 @@ class NotaCreate(BaseModel):
     nomor_nota: str
     tanggal_nota: str
     tanggal_bayar: Optional[str] = ""
-    kode_rekening: str
-    kode_rekening_nama: Optional[str] = ""
-    jenis: str  # pendapatan | pengeluaran (derived from kode rekening)
     sumber_dana: str
-    kegiatan: str
     items: List[NotaItem]
     total_nota: float = 0
     keterangan: Optional[str] = ""
+
+
+class ArusKasInput(BaseModel):
+    periode: str  # "YYYY-MM"
+    sumber_dana: str
+    modal_awal: float = 0
+    penjualan: float = 0
+    penambahan_modal: float = 0
+    kas_bulan_lalu_belum_disetor: float = 0
+    sponsor_sisa: float = 0
+    penambahan_lain: float = 0
+    setoran_kas_bulan_lalu: float = 0
+    setoran_kas_bulan_ini: float = 0
 
 # ---------------------------------------------------------------------------
 # Auth endpoints
@@ -256,6 +283,7 @@ MASTER_COLLECTIONS = {
     "kode-rekening": ("kode_rekening", KodeRekening),
     "kegiatan": ("kegiatan", Kegiatan),
     "item-barang": ("item_barang", ItemBarang),
+    "sumber-dana": ("sumber_dana", SumberDana),
 }
 
 
@@ -265,12 +293,23 @@ def _serialize(doc: dict) -> dict:
     return doc
 
 
+async def _enrich_master(kind: str, doc: dict) -> dict:
+    if kind == "kode-rekening" and not doc.get("jenis"):
+        doc["jenis"] = jenis_from_kode(doc.get("kode", ""))
+    if kind == "item-barang" and doc.get("kode_rek"):
+        kr = await db.kode_rekening.find_one({"kode": str(doc["kode_rek"]).strip()})
+        if kr:
+            doc["kode_rek_nama"] = kr.get("nama", "")
+    return doc
+
+
 @api_router.get("/master/{kind}")
 async def list_master(kind: str, user: dict = Depends(get_current_user)):
     if kind not in MASTER_COLLECTIONS:
         raise HTTPException(status_code=404, detail="Jenis master data tidak dikenal")
     coll = MASTER_COLLECTIONS[kind][0]
-    docs = await db[coll].find({}).sort("nama", 1).to_list(5000)
+    sort_field = "kode" if kind in ("kode-rekening", "sumber-dana") else "nama"
+    docs = await db[coll].find({}).sort(sort_field, 1).to_list(5000)
     return [_serialize(d) for d in docs]
 
 
@@ -280,7 +319,7 @@ async def create_master(kind: str, payload: dict, user: dict = Depends(get_curre
         raise HTTPException(status_code=404, detail="Jenis master data tidak dikenal")
     coll, model = MASTER_COLLECTIONS[kind]
     obj = model(**payload)
-    doc = obj.model_dump()
+    doc = await _enrich_master(kind, obj.model_dump())
     doc["created_at"] = now_utc().isoformat()
     res = await db[coll].insert_one(doc)
     return _serialize({**doc, "_id": res.inserted_id})
@@ -292,7 +331,8 @@ async def update_master(kind: str, item_id: str, payload: dict, user: dict = Dep
         raise HTTPException(status_code=404, detail="Jenis master data tidak dikenal")
     coll, model = MASTER_COLLECTIONS[kind]
     obj = model(**payload)
-    await db[coll].update_one({"_id": ObjectId(item_id)}, {"$set": obj.model_dump()})
+    doc = await _enrich_master(kind, obj.model_dump())
+    await db[coll].update_one({"_id": ObjectId(item_id)}, {"$set": doc})
     return {"message": "Data diperbarui"}
 
 
@@ -322,31 +362,40 @@ async def import_master(kind: str, file: UploadFile = File(...), user: dict = De
     dfr.columns = [str(c).strip().lower().replace(" ", "_") for c in dfr.columns]
     inserted = 0
     errors = []
+
+    def g(row, *keys):
+        for k in keys:
+            if k in row and str(row[k]).strip() != "":
+                return str(row[k]).strip()
+        return ""
+
     for idx, row in dfr.iterrows():
         row = {k: ("" if pd.isna(v) else v) for k, v in row.to_dict().items()}
         try:
             if kind == "kode-rekening":
-                jenis = str(row.get("jenis", "")).strip().lower()
-                if jenis not in ("pendapatan", "pengeluaran"):
-                    jenis = "pengeluaran"
-                doc = {"kode": str(row.get("kode", "")).strip(), "nama": str(row.get("nama", "")).strip(), "jenis": jenis}
-                if not doc["kode"] and not doc["nama"]:
+                kode = g(row, "kode", "kode_rek", "kode_rekening")
+                nama = g(row, "nama", "nama_rekening")
+                jenis = g(row, "jenis").lower()
+                if jenis not in ("pendapatan", "belanja", "dialokasikan"):
+                    jenis = jenis_from_kode(kode)
+                doc = {"kode": kode, "nama": nama, "jenis": jenis}
+                if not kode and not nama:
                     continue
             elif kind == "kegiatan":
-                doc = {"nama": str(row.get("nama", "")).strip(), "keterangan": str(row.get("keterangan", "")).strip()}
+                doc = {"nama": g(row, "nama", "kategori", "katagori"), "keterangan": g(row, "keterangan")}
+                if not doc["nama"]:
+                    continue
+            elif kind == "sumber-dana":
+                doc = {"kode": g(row, "kode"), "nama": g(row, "nama")}
                 if not doc["nama"]:
                     continue
             else:  # item-barang
-                harga = row.get("harga_default", row.get("harga", 0))
-                try:
-                    harga = float(harga) if harga != "" else 0
-                except Exception:
-                    harga = 0
-                doc = {"nama": str(row.get("nama", "")).strip(),
-                       "satuan": str(row.get("satuan", "pcs")).strip() or "pcs",
-                       "harga_default": harga}
+                doc = {"nama": g(row, "nama", "nama_barang"),
+                       "kode_rek": g(row, "kode_rek", "kode_rekening", "kode"),
+                       "kategori": g(row, "sumber_rek", "kategori", "katagori")}
                 if not doc["nama"]:
                     continue
+            doc = await _enrich_master(kind, doc)
             doc["created_at"] = now_utc().isoformat()
             await db[coll].insert_one(doc)
             inserted += 1
@@ -362,9 +411,10 @@ async def import_master(kind: str, file: UploadFile = File(...), user: dict = De
 @api_router.post("/nota")
 async def create_nota(payload: NotaCreate, user: dict = Depends(get_current_user)):
     doc = payload.model_dump()
-    # recompute totals server-side
     total = 0.0
     for it in doc["items"]:
+        if not it.get("jenis"):
+            it["jenis"] = jenis_from_kode(it.get("kode_rekening", ""))
         it["total"] = round((it.get("unit") or 0) * (it.get("harga_per_unit") or 0), 2)
         total += it["total"]
     doc["total_nota"] = round(total, 2)
@@ -374,7 +424,7 @@ async def create_nota(payload: NotaCreate, user: dict = Depends(get_current_user
     return _serialize({**doc, "_id": res.inserted_id})
 
 
-def _nota_filter(start, end, jenis, sumber_dana, kegiatan, kode_rekening):
+def _nota_filter(start, end, sumber_dana):
     q = {}
     if start or end:
         rng = {}
@@ -383,23 +433,16 @@ def _nota_filter(start, end, jenis, sumber_dana, kegiatan, kode_rekening):
         if end:
             rng["$lte"] = end
         q["tanggal_nota"] = rng
-    if jenis and jenis != "all":
-        q["jenis"] = jenis
     if sumber_dana and sumber_dana != "all":
         q["sumber_dana"] = sumber_dana
-    if kegiatan and kegiatan != "all":
-        q["kegiatan"] = kegiatan
-    if kode_rekening and kode_rekening != "all":
-        q["kode_rekening"] = kode_rekening
     return q
 
 
 @api_router.get("/nota")
 async def list_nota(user: dict = Depends(get_current_user),
                     start: Optional[str] = Query(None), end: Optional[str] = Query(None),
-                    jenis: Optional[str] = Query(None), sumber_dana: Optional[str] = Query(None),
-                    kegiatan: Optional[str] = Query(None), kode_rekening: Optional[str] = Query(None)):
-    q = _nota_filter(start, end, jenis, sumber_dana, kegiatan, kode_rekening)
+                    sumber_dana: Optional[str] = Query(None)):
+    q = _nota_filter(start, end, sumber_dana)
     docs = await db.notas.find(q).sort("tanggal_nota", -1).to_list(5000)
     return [_serialize(d) for d in docs]
 
