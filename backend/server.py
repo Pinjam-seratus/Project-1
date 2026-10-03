@@ -320,6 +320,9 @@ async def create_master(kind: str, payload: dict, user: dict = Depends(get_curre
     coll, model = MASTER_COLLECTIONS[kind]
     obj = model(**payload)
     doc = await _enrich_master(kind, obj.model_dump())
+    if kind in ("kode-rekening", "sumber-dana") and doc.get("kode"):
+        if await db[coll].find_one({"kode": doc["kode"]}):
+            raise HTTPException(status_code=400, detail=f"Kode '{doc['kode']}' sudah ada")
     doc["created_at"] = now_utc().isoformat()
     res = await db[coll].insert_one(doc)
     return _serialize({**doc, "_id": res.inserted_id})
@@ -532,7 +535,7 @@ async def report_pp(user: dict = Depends(get_current_user),
 async def report_rincian(user: dict = Depends(get_current_user),
                          start: Optional[str] = Query(None), end: Optional[str] = Query(None),
                          sumber_dana: Optional[str] = Query(None), kategori: Optional[str] = Query(None),
-                         kode_rekening: Optional[str] = Query(None)):
+                         kode_rekening: Optional[str] = Query(None), jenis: Optional[str] = Query(None)):
     q = _nota_filter(start, end, sumber_dana)
     docs = await db.notas.find(q).sort("tanggal_nota", 1).to_list(10000)
     groups = {}
@@ -540,6 +543,8 @@ async def report_rincian(user: dict = Depends(get_current_user),
         sd = d.get("sumber_dana", "lainnya")
         first = True
         for it in d.get("items", []):
+            if jenis and jenis != "all" and it.get("jenis") != jenis:
+                continue
             if not _item_passes(it, kategori, kode_rekening):
                 continue
             g = groups.setdefault(sd, {"sumber_dana": sd, "items": [], "total": 0})

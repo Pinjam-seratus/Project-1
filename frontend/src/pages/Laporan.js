@@ -25,6 +25,7 @@ export default function Laporan() {
   const [fSumber, setFSumber] = useState("all");
   const [fKategori, setFKategori] = useState("all");
   const [fKode, setFKode] = useState("all");
+  const [fJenis, setFJenis] = useState("belanja");
   const [loading, setLoading] = useState(false);
 
   const [sumberDana, setSumberDana] = useState([]);
@@ -62,7 +63,7 @@ export default function Laporan() {
       if (fKategori !== "all") params.kategori = fKategori;
       const [a, b] = await Promise.all([
         api.get("/reports/pendapatan-pengeluaran", { params }),
-        api.get("/reports/rincian-belanja", { params: { ...params, ...(fKode !== "all" ? { kode_rekening: fKode } : {}) } }),
+        api.get("/reports/rincian-belanja", { params: { ...params, ...(fKode !== "all" ? { kode_rekening: fKode } : {}), ...(fJenis !== "all" ? { jenis: fJenis } : {}) } }),
       ]);
       setPp(a.data);
       setRincian(b.data);
@@ -273,8 +274,22 @@ export default function Laporan() {
                   </Select>
                 </div>
               )}
+              {tab === "rincian" && (
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Jenis</Label>
+                  <Select value={fJenis} onValueChange={setFJenis}>
+                    <SelectTrigger data-testid="filter-jenis" className="w-36"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Semua</SelectItem>
+                      <SelectItem value="belanja">Belanja</SelectItem>
+                      <SelectItem value="pendapatan">Pendapatan</SelectItem>
+                      <SelectItem value="dialokasikan">Dialokasikan</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               <Button onClick={load} data-testid="btn-terapkan-filter">Terapkan</Button>
-              <Button variant="ghost" onClick={() => { setStart(""); setEnd(""); setFSumber("all"); setFKategori("all"); setFKode("all"); setTimeout(load, 0); }} data-testid="btn-reset-filter">Reset</Button>
+              <Button variant="ghost" onClick={() => { setStart(""); setEnd(""); setFSumber("all"); setFKategori("all"); setFKode("all"); setFJenis("belanja"); setTimeout(load, 0); }} data-testid="btn-reset-filter">Reset</Button>
             </div>
           </Card>
         )}
