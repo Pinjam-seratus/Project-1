@@ -10,7 +10,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { FileSpreadsheet, FileText, Loader2, TrendingUp, TrendingDown, Wallet, Save } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { FileSpreadsheet, FileText, Loader2, TrendingUp, TrendingDown, Wallet, Save, ArrowRightLeft } from "lucide-react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -42,6 +43,10 @@ export default function Laporan() {
   const [arusKas, setArusKas] = useState(null);
   const [akInput, setAkInput] = useState(null);
   const [akLoading, setAkLoading] = useState(false);
+
+  // ringkasan arus kas state
+  const [ringkasan, setRingkasan] = useState(null);
+  const [rkLoading, setRkLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -85,6 +90,7 @@ export default function Laporan() {
       setArusKas(r.data.groups[0] || null);
       setAkInput({
         saldo_awal: inp.data.saldo_awal || 0,
+        saldo_awal_manual: !!inp.data.saldo_awal_manual,
         penjualan: inp.data.penjualan || 0,
         penambahan_modal: inp.data.penambahan_modal || 0,
         pendapatan_lainnya: inp.data.pendapatan_lainnya || 0,
@@ -110,6 +116,52 @@ export default function Laporan() {
     } catch (err) {
       toast.error(formatApiError(err, "Gagal menyimpan"));
     }
+  };
+
+  // ---- Ringkasan Arus Kas ----
+  const loadRingkasan = async () => {
+    setRkLoading(true);
+    try {
+      const { data } = await api.get("/reports/arus-kas-ringkasan", { params: { periode } });
+      setRingkasan(data);
+    } finally {
+      setRkLoading(false);
+    }
+  };
+  useEffect(() => { if (tab === "ringkasan") loadRingkasan(); /* eslint-disable-next-line */ }, [tab, periode]);
+
+  const exportRingkasanExcel = () => {
+    if (!ringkasan) return;
+    const wb = XLSX.utils.book_new();
+    const rows = ringkasan.rows.map((r) => ({
+      "Akun": r.sumber_dana_nama, "Saldo Awal": r.saldo_awal, "Bertambah": r.bertambah,
+      "Berkurang": r.berkurang, "Saldo Akhir": r.saldo_akhir,
+    }));
+    rows.push({
+      "Akun": "TOTAL", "Saldo Awal": ringkasan.totals.saldo_awal, "Bertambah": ringkasan.totals.bertambah,
+      "Berkurang": ringkasan.totals.berkurang, "Saldo Akhir": ringkasan.totals.saldo_akhir,
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Ringkasan Arus Kas");
+    XLSX.writeFile(wb, `ringkasan-arus-kas-${periode}.xlsx`);
+    toast.success("Excel diunduh");
+  };
+
+  const exportRingkasanPdf = () => {
+    if (!ringkasan) return;
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text("Ringkasan Arus Kas per Akun", 14, 16);
+    doc.setFontSize(9); doc.text(`Periode: ${periode}`, 14, 22);
+    autoTable(doc, {
+      startY: 28,
+      head: [["Akun", "Saldo Awal", "Bertambah", "Berkurang", "Saldo Akhir"]],
+      body: [
+        ...ringkasan.rows.map((r) => [r.sumber_dana_nama, formatRupiah(r.saldo_awal), formatRupiah(r.bertambah), formatRupiah(r.berkurang), formatRupiah(r.saldo_akhir)]),
+        ["TOTAL", formatRupiah(ringkasan.totals.saldo_awal), formatRupiah(ringkasan.totals.bertambah), formatRupiah(ringkasan.totals.berkurang), formatRupiah(ringkasan.totals.saldo_akhir)],
+      ],
+      styles: { fontSize: 8 }, headStyles: { fillColor: [2, 132, 199] },
+    });
+    doc.save(`ringkasan-arus-kas-${periode}.pdf`);
+    toast.success("PDF diunduh");
   };
 
   // ---- Exports ----
@@ -233,6 +285,7 @@ export default function Laporan() {
           <TabsTrigger value="pp" data-testid="tab-laporan-pp">Pendapatan & Pengeluaran</TabsTrigger>
           <TabsTrigger value="rincian" data-testid="tab-laporan-rincian">Rincian Belanja / Sumber Dana</TabsTrigger>
           <TabsTrigger value="aruskas" data-testid="tab-laporan-aruskas">Rincian Arus Kas</TabsTrigger>
+          <TabsTrigger value="ringkasan" data-testid="tab-laporan-ringkasan">Ringkasan Arus Kas</TabsTrigger>
         </TabsList>
 
         {/* Filters (pp + rincian) */}
@@ -414,8 +467,24 @@ export default function Laporan() {
               {/* Input manual */}
               <Card className="p-5 space-y-3">
                 <h3 className="font-heading font-semibold text-sm">Input Penambahan & Setoran (Manual)</h3>
+                <div className="flex items-center justify-between gap-3 pb-3 border-b border-border">
+                  <div className="flex-1">
+                    <Label className="text-xs">Saldo Awal</Label>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      {akInput.saldo_awal_manual ? "Input manual" : "Otomatis dari saldo akhir bulan lalu (carryover)"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch checked={akInput.saldo_awal_manual}
+                      onCheckedChange={(v) => setAkInput((p) => ({ ...p, saldo_awal_manual: v }))}
+                      data-testid="ak-saldo-awal-manual" />
+                    <Input type="number" value={akInput.saldo_awal_manual ? akInput.saldo_awal : (arusKas?.saldo_awal ?? 0)}
+                      disabled={!akInput.saldo_awal_manual}
+                      onChange={(e) => setAkInput((p) => ({ ...p, saldo_awal: Number(e.target.value) || 0 }))}
+                      data-testid="ak-input-saldo_awal" className="w-40 h-9 text-right font-mono" />
+                  </div>
+                </div>
                 {[
-                  ["saldo_awal", "Saldo Awal"],
                   ["penjualan", "Penjualan"], ["penambahan_modal", "Penambahan Modal (dari Bank/Koperasi)"],
                   ["pendapatan_lainnya", "Pendapatan Lainnya"],
                   ["kas_bulan_lalu_belum_disetor", "Kas Bulan Lalu Belum Disetor"],
@@ -436,7 +505,12 @@ export default function Laporan() {
               {/* Report */}
               <Card className="p-5 space-y-3" data-testid="aruskas-report">
                 <h3 className="font-heading font-semibold text-sm">Rincian Arus Kas — {sdName(akSumber)} ({periode})</h3>
-                <div className="flex justify-between text-sm font-semibold"><span>Saldo Awal</span><span className="font-mono tabular-nums">{formatRupiah(arusKas?.saldo_awal)}</span></div>
+                <div className="flex justify-between text-sm font-semibold">
+                  <span className="flex items-center gap-2">Saldo Awal
+                    {arusKas?.saldo_awal_auto && <Badge variant="outline" className="text-[10px] font-normal">carryover</Badge>}
+                  </span>
+                  <span className="font-mono tabular-nums">{formatRupiah(arusKas?.saldo_awal)}</span>
+                </div>
                 <div>
                   <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 uppercase mb-1">Penambahan</p>
                   {arusKas && Object.entries({
@@ -448,6 +522,12 @@ export default function Laporan() {
                   }).map(([k, v]) => (
                     <div key={k} className="flex justify-between text-sm py-0.5"><span className="text-muted-foreground">{k}</span><span className="font-mono tabular-nums">{formatRupiah(v)}</span></div>
                   ))}
+                  {arusKas && arusKas.transfer_masuk > 0 && (
+                    <div className="flex justify-between text-sm py-0.5" data-testid="ak-transfer-masuk">
+                      <span className="text-sky-700 dark:text-sky-400 flex items-center gap-1"><ArrowRightLeft className="h-3 w-3" /> Transfer Masuk dari Akun Lain</span>
+                      <span className="font-mono tabular-nums text-sky-700 dark:text-sky-400">{formatRupiah(arusKas.transfer_masuk)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between text-sm font-semibold border-t border-border pt-1 mt-1"><span>Jumlah Penambahan</span><span className="font-mono tabular-nums text-emerald-600 dark:text-emerald-400">{formatRupiah(arusKas?.jumlah_penambahan)}</span></div>
                 </div>
                 <div>

@@ -195,6 +195,7 @@ class ArusKasInput(BaseModel):
     periode: str  # "YYYY-MM"
     sumber_dana: str
     saldo_awal: float = 0
+    saldo_awal_manual: bool = False  # True = pakai saldo_awal manual, False = carryover otomatis
     penjualan: float = 0
     penambahan_modal: float = 0
     pendapatan_lainnya: float = 0
@@ -567,63 +568,148 @@ async def report_rincian(user: dict = Depends(get_current_user),
     return {"groups": result}
 
 
+def _prev_periode(periode: str) -> str:
+    y, m = int(periode[:4]), int(periode[5:7])
+    m -= 1
+    if m == 0:
+        m = 12
+        y -= 1
+    return f"{y:04d}-{m:02d}"
+
+
+TRANSFER_ROLES = ("kasir", "bank", "koperasi")
+
+
+def _resolve_transfer_targets(sd_master) -> dict:
+    """Petakan peran setoran (kasir/bank/koperasi) ke kode sumber dana via nama."""
+    targets = {"kasir": None, "bank": None, "koperasi": None}
+    for s in sd_master:
+        nm = (s.get("nama") or "").lower()
+        if targets["kasir"] is None and "kasir" in nm:
+            targets["kasir"] = s["kode"]
+        elif targets["bank"] is None and ("bank" in nm or "transfer" in nm):
+            targets["bank"] = s["kode"]
+        elif targets["koperasi"] is None and "koperasi" in nm:
+            targets["koperasi"] = s["kode"]
+    return targets
+
+
+async def _compute_akun(periode: str, code: str, mmap: dict, targets: dict, depth: int = 0) -> dict:
+    inp = await db.arus_kas_input.find_one({"periode": periode, "sumber_dana": code}) or {}
+    notas = await db.notas.find(
+        {"tanggal_nota": {"$regex": f"^{periode}"}, "sumber_dana": code}).to_list(10000)
+
+    # Early stop untuk rekursi carryover pada bulan kosong
+    if depth > 0 and not inp and not notas:
+        return {"saldo_awal": 0, "saldo_awal_auto": True, "penambahan": {}, "transfer_masuk": 0,
+                "jumlah_penambahan": 0, "belanja": [], "total_belanja": 0, "pengeluaran_lain": {},
+                "jumlah_pengeluaran": 0, "saldo_akhir": 0}
+
+    belanja_acc = {}
+    for d in notas:
+        for it in d.get("items", []):
+            if it.get("jenis") != "belanja":
+                continue
+            k = it.get("kode_rekening", "-") or "-"
+            belanja_acc[k] = belanja_acc.get(k, 0.0) + it.get("total", 0)
+    belanja_rows = [{"kode": k, "nama": mmap.get(k, {}).get("nama", k), "nilai": round(v, 2)}
+                    for k, v in sorted(belanja_acc.items(), key=lambda kv: _kode_sort_key(kv[0]))]
+    total_belanja = sum(r["nilai"] for r in belanja_rows)
+
+    penambahan = {
+        "penjualan": inp.get("penjualan", 0),
+        "penambahan_modal": inp.get("penambahan_modal", 0),
+        "pendapatan_lainnya": inp.get("pendapatan_lainnya", 0),
+        "kas_bulan_lalu_belum_disetor": inp.get("kas_bulan_lalu_belum_disetor", 0),
+        "sponsor_sisa": inp.get("sponsor_sisa", 0),
+        "penambahan_lain": inp.get("penambahan_lain", 0),
+    }
+
+    # Transfer masuk: setoran dari akun lain yang ditujukan ke akun ini (periode sama)
+    period_inputs = await db.arus_kas_input.find({"periode": periode}).to_list(200)
+    transfer_masuk = 0.0
+    for other in period_inputs:
+        if other.get("sumber_dana") == code:
+            continue
+        for role in TRANSFER_ROLES:
+            if targets.get(role) == code:
+                transfer_masuk += other.get(f"setoran_ke_{role}", 0) or 0
+
+    jumlah_penambahan = sum(penambahan.values()) + transfer_masuk
+
+    pengeluaran_lain = {
+        "setoran_ke_kasir": inp.get("setoran_ke_kasir", 0),
+        "setoran_ke_bank": inp.get("setoran_ke_bank", 0),
+        "setoran_ke_koperasi": inp.get("setoran_ke_koperasi", 0),
+        "belanja_dana_pengembangan": inp.get("belanja_dana_pengembangan", 0),
+    }
+    jumlah_pengeluaran = total_belanja + sum(pengeluaran_lain.values())
+
+    # Saldo awal: manual atau carryover dari saldo akhir bulan sebelumnya
+    if inp.get("saldo_awal_manual"):
+        saldo_awal = inp.get("saldo_awal", 0)
+        saldo_awal_auto = False
+    elif depth < 24:
+        prev = await _compute_akun(_prev_periode(periode), code, mmap, targets, depth + 1)
+        saldo_awal = prev["saldo_akhir"]
+        saldo_awal_auto = True
+    else:
+        saldo_awal = inp.get("saldo_awal", 0)
+        saldo_awal_auto = False
+
+    saldo_akhir = round(saldo_awal + jumlah_penambahan - jumlah_pengeluaran, 2)
+    return {
+        "saldo_awal": round(saldo_awal, 2), "saldo_awal_auto": saldo_awal_auto,
+        "penambahan": penambahan, "transfer_masuk": round(transfer_masuk, 2),
+        "jumlah_penambahan": round(jumlah_penambahan, 2),
+        "belanja": belanja_rows, "total_belanja": round(total_belanja, 2),
+        "pengeluaran_lain": pengeluaran_lain,
+        "jumlah_pengeluaran": round(jumlah_pengeluaran, 2), "saldo_akhir": saldo_akhir,
+    }
+
+
 @api_router.get("/reports/arus-kas")
 async def report_arus_kas(user: dict = Depends(get_current_user),
                           periode: str = Query(...), sumber_dana: Optional[str] = Query(None)):
-    q = {"tanggal_nota": {"$regex": f"^{periode}"}}
-    if sumber_dana and sumber_dana != "all":
-        q["sumber_dana"] = sumber_dana
-    docs = await db.notas.find(q).to_list(10000)
     sd_master = await db.sumber_dana.find({}).sort("kode", 1).to_list(100)
     sd_names = {s["kode"]: s["nama"] for s in sd_master}
+    targets = _resolve_transfer_targets(sd_master)
     target_codes = [sumber_dana] if (sumber_dana and sumber_dana != "all") else [s["kode"] for s in sd_master]
     master = await db.kode_rekening.find({}).to_list(5000)
     mmap = {m["kode"]: m for m in master}
-    inputs = await db.arus_kas_input.find({"periode": periode}).to_list(100)
-    imap = {i["sumber_dana"]: i for i in inputs}
 
     result = []
     for code in target_codes:
-        belanja_acc = {}
-        for d in docs:
-            if d.get("sumber_dana") != code:
-                continue
-            for it in d.get("items", []):
-                if it.get("jenis") != "belanja":
-                    continue
-                k = it.get("kode_rekening", "-") or "-"
-                belanja_acc[k] = belanja_acc.get(k, 0.0) + it.get("total", 0)
-        belanja_rows = [{"kode": k, "nama": mmap.get(k, {}).get("nama", k), "nilai": round(v, 2)}
-                        for k, v in sorted(belanja_acc.items(), key=lambda kv: _kode_sort_key(kv[0]))]
-        total_belanja = sum(r["nilai"] for r in belanja_rows)
-        inp = imap.get(code, {})
-        saldo_awal = inp.get("saldo_awal", 0)
-        penambahan = {
-            "penjualan": inp.get("penjualan", 0),
-            "penambahan_modal": inp.get("penambahan_modal", 0),
-            "pendapatan_lainnya": inp.get("pendapatan_lainnya", 0),
-            "kas_bulan_lalu_belum_disetor": inp.get("kas_bulan_lalu_belum_disetor", 0),
-            "sponsor_sisa": inp.get("sponsor_sisa", 0),
-            "penambahan_lain": inp.get("penambahan_lain", 0),
-        }
-        jumlah_penambahan = sum(penambahan.values())
-        pengeluaran_lain = {
-            "setoran_ke_kasir": inp.get("setoran_ke_kasir", 0),
-            "setoran_ke_bank": inp.get("setoran_ke_bank", 0),
-            "setoran_ke_koperasi": inp.get("setoran_ke_koperasi", 0),
-            "belanja_dana_pengembangan": inp.get("belanja_dana_pengembangan", 0),
-        }
-        jumlah_pengeluaran = total_belanja + sum(pengeluaran_lain.values())
-        saldo_akhir = round(saldo_awal + jumlah_penambahan - jumlah_pengeluaran, 2)
-        result.append({
-            "sumber_dana": code, "sumber_dana_nama": sd_names.get(code, code),
-            "saldo_awal": saldo_awal,
-            "penambahan": penambahan, "jumlah_penambahan": round(jumlah_penambahan, 2),
-            "belanja": belanja_rows, "total_belanja": round(total_belanja, 2),
-            "pengeluaran_lain": pengeluaran_lain,
-            "jumlah_pengeluaran": round(jumlah_pengeluaran, 2), "saldo_akhir": saldo_akhir,
-        })
+        akun = await _compute_akun(periode, code, mmap, targets)
+        akun["sumber_dana"] = code
+        akun["sumber_dana_nama"] = sd_names.get(code, code)
+        result.append(akun)
     return {"periode": periode, "groups": result}
+
+
+@api_router.get("/reports/arus-kas-ringkasan")
+async def report_arus_kas_ringkasan(user: dict = Depends(get_current_user), periode: str = Query(...)):
+    """Ringkasan arus kas per akun: saldo awal, bertambah, berkurang, saldo akhir."""
+    sd_master = await db.sumber_dana.find({}).sort("kode", 1).to_list(100)
+    targets = _resolve_transfer_targets(sd_master)
+    master = await db.kode_rekening.find({}).to_list(5000)
+    mmap = {m["kode"]: m for m in master}
+    rows = []
+    for s in sd_master:
+        akun = await _compute_akun(periode, s["kode"], mmap, targets)
+        rows.append({
+            "sumber_dana": s["kode"], "sumber_dana_nama": s["nama"],
+            "saldo_awal": akun["saldo_awal"], "saldo_awal_auto": akun["saldo_awal_auto"],
+            "bertambah": akun["jumlah_penambahan"], "berkurang": akun["jumlah_pengeluaran"],
+            "transfer_masuk": akun["transfer_masuk"], "saldo_akhir": akun["saldo_akhir"],
+        })
+    totals = {
+        "saldo_awal": round(sum(r["saldo_awal"] for r in rows), 2),
+        "bertambah": round(sum(r["bertambah"] for r in rows), 2),
+        "berkurang": round(sum(r["berkurang"] for r in rows), 2),
+        "saldo_akhir": round(sum(r["saldo_akhir"] for r in rows), 2),
+    }
+    return {"periode": periode, "rows": rows, "totals": totals}
 
 
 @api_router.get("/arus-kas-input")
